@@ -339,9 +339,9 @@ type TransactionWitnessSet struct {
 }
 
 type Point struct {
-	_    struct{}   `cbor:",toarray"`
-	Slot uint64     `cbor:",omitempty" json:"slot"`
-	Hash ByteString `chor:",omitempty" json:"hash"`
+	_    struct{} `cbor:",toarray"`
+	Slot uint64   `cbor:",omitempty" json:"slot"`
+	Hash []byte   `chor:",omitempty" json:"hash"`
 }
 
 func (p *Point) UnmarshalCBOR(bytes []byte) (err error) {
@@ -409,11 +409,6 @@ func (r SubtypeOf[T]) MarshalJSON() ([]byte, error) {
 }
 
 func (r *SubtypeOf[T]) UnmarshalCBOR(bytes []byte) (err error) {
-
-	if fmt.Sprintf("%T", new(T)) == "*main.AuxData" {
-		fmt.Println("FUCL")
-	}
-
 	for _, subtype := range (*new(T)).Subtypes() {
 		if err = cbor.Unmarshal(bytes, subtype); err == nil {
 			r.Subtype = subtype

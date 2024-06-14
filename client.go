@@ -25,7 +25,7 @@ func (c *Client) Dial() (err error) {
 }
 
 func (c *Client) Handshake() (err error) {
-	message := MessageHandshake{
+	message := MessageProposedVersions{
 		WithSubprotocol: WithSubprotocol{
 			Subprotocol: SubprotocolHandshakeProposedVersion,
 		},

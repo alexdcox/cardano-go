@@ -19,7 +19,7 @@ type MessageChainSync4TODO struct {
 	A []struct {
 		_     struct{} `cbor:",toarray"`
 		Point uint64
-		Hash  ByteString
+		Hash  []byte
 	}
 }
 

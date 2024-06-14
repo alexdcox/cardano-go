@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 
@@ -37,8 +36,8 @@ func main() {
 	case "blocks":
 		decodeBlocks()
 		return
-	case "decode-proxy-files":
-		decodeProxyFiles()
+	// case "decode-proxy-files":
+	// 	decodeProxyFiles()
 	case "test-deserialize-serialize":
 		testDeserializeSerialize()
 	}
@@ -58,65 +57,76 @@ func main() {
 	testDeserializeSerialize()
 }
 
-// func printSegmentsFromStream(reader *SegmentReader) {
-// 	for {
-// 		segment, ok := <-reader.Stream
-// 		if ok {
-// 			t, err := handleSegment(segment)
+func printSegmentsFromStream() {
+	// log.Info().Msg("streaming segments")
+	for {
+		segment, ok := <-globalSegmentStream
+		if ok {
+			t, err := handleSegment(segment)
+			if err != nil {
+				log.Fatal().Msgf("%+v", errors.WithStack(err))
+			}
+			// fmt.Printf("%T\n", t)
+			_ = t
+		} else {
+			log.Error().Msg("unable to read segment")
+		}
+	}
+}
+
+var globalSegmentStream chan *Segment
+
+// func decodeProxyFiles() {
+// 	globalSegmentStream = make(chan *Segment)
+//
+// 	dir := "_data/proxy-20240610-182733/"
+// 	items, _ := ioutil.ReadDir(dir)
+// 	inReader := &SegmentReader{
+// 		Direction: "IN",
+// 		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
+// 		Stream:    globalSegmentStream,
+// 	}
+// 	outReader := &SegmentReader{
+// 		Direction: "OUT",
+// 		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
+// 		Stream:    globalSegmentStream,
+// 	}
+// 	var err error
+//
+// 	for _, item := range items {
+// 		h := loadHexFile(dir + item.Name())
+// 		if strings.Contains(item.Name(), "i") {
+// 			_, err = inReader.Read(h)
 // 			if err != nil {
 // 				log.Fatal().Msgf("%+v", errors.WithStack(err))
 // 			}
-// 			fmt.Printf("%T\n", t)
 // 		} else {
-// 			log.Error().Msg("unable to read segment")
+// 			_, err = outReader.Read(h)
+// 			if err != nil {
+// 				log.Fatal().Msgf("%+v", errors.WithStack(err))
+// 			}
 // 		}
 // 	}
+//
+// 	fmt.Printf("read %d files\n", len(items))
+// 	fmt.Println("done")
+// 	// fmt.Printf("%x\n", x)
 // }
-
-func decodeProxyFiles() {
-	dir := "_data/proxy-20240610-182733/"
-	items, _ := ioutil.ReadDir(dir)
-	inReader := &SegmentReader{
-		Direction: "IN",
-		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
-	}
-	// go printSegmentsFromStream(inReader)
-	outReader := &SegmentReader{
-		Direction: "OUT",
-		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
-	}
-	// go printSegmentsFromStream(outReader)
-	var err error
-	for _, item := range items {
-		h := loadHexFile(dir + item.Name())
-		if strings.Contains(item.Name(), "i") {
-			_, err = inReader.Read(h)
-			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
-			}
-		} else {
-			_, err = outReader.Read(h)
-			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
-			}
-		}
-	}
-
-	fmt.Printf("read %d files\n", len(items))
-	fmt.Println("done")
-	// fmt.Printf("%x\n", x)
-}
 
 func testDeserializeSerialize() {
 	dir := "_data/proxy-20240610-182733/"
-	items, _ := ioutil.ReadDir(dir)
+	items, _ := os.ReadDir(dir)
+	globalSegmentStream = make(chan *Segment)
+	go printSegmentsFromStream()
 	inReader := &SegmentReader{
-		Direction: "IN",
+		Direction: DirectionIn,
 		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
+		Stream:    globalSegmentStream,
 	}
 	outReader := &SegmentReader{
-		Direction: "OUT",
+		Direction: DirectionOut,
 		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
+		Stream:    globalSegmentStream,
 	}
 	var err error
 	for _, item := range items {
@@ -133,30 +143,6 @@ func testDeserializeSerialize() {
 			}
 		}
 	}
-}
-
-func decodeAuxData() {
-	b := "A101A11902A2A1636D736781781C4D696E737761703A205377617020457861637420496E204F72646572"
-
-	bb, err := hex.DecodeString(b)
-	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
-	}
-
-	a := AuxData{}
-
-	err = cbor.Unmarshal(bb, &a)
-	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
-	}
-
-	if j, err2 := json.MarshalIndent(a, "", "  "); err2 == nil {
-		fmt.Println(string(j))
-	} else {
-		log.Fatal().Msgf("%+v\n", err2)
-	}
-
-	fmt.Println("ok")
 }
 
 func loadFile(filePath string) (data []byte) {
@@ -207,35 +193,6 @@ func decodeBlockMessages() {
 	}
 }
 
-func decodeRollBackward() {
-	rb1 := loadHexFile("./_data/rollbackward")
-	rb2 := loadHexFile("./_data/rollbackward2")
-
-	do := func(data []byte) {
-		first, _, err := cbor.DiagnoseFirst(data)
-		if err != nil {
-			log.Fatal().Msgf("%+v", errors.WithStack(err))
-		}
-		fmt.Println(first)
-
-		m := &MessageRollBackward{}
-		err = cbor.Unmarshal(data, m)
-		if err != nil {
-			log.Fatal().Msgf("%+v", errors.WithStack(err))
-		}
-		fmt.Println("ok")
-
-		if j, err := json.MarshalIndent(m, "", "  "); err == nil {
-			fmt.Println(string(j))
-		}
-	}
-
-	do(rb1)
-	do(rb2)
-}
-
-var output string
-
 func handleSegment(segment *Segment) (target any, err error) {
 	var temp any
 
@@ -247,7 +204,6 @@ func handleSegment(segment *Segment) (target any, err error) {
 	if subprotocol == -1 {
 		log.Info().Msg("SKIPPING non-valid subprotocol segment, probably needs concatenating?")
 		// log.Info().Msgf("%x", segment.Payload)
-		output += fmt.Sprintf("%x\n", segment.Payload)
 		return
 	}
 
@@ -256,7 +212,7 @@ func handleSegment(segment *Segment) (target any, err error) {
 	// TODO: handle the above error and remove the debug code below
 
 	if target != nil {
-		fmt.Printf("%s > %T (%d)\n", segment.Protocol, target, subprotocol)
+		fmt.Printf("%s %s %T (%d)\n", segment.Direction.String(), segment.Protocol, target, subprotocol)
 		err = cbor.Unmarshal(segment.Payload, target)
 		if err != nil {
 			fmt.Println(temp)
@@ -266,9 +222,9 @@ func handleSegment(segment *Segment) (target any, err error) {
 			err = errors.WithStack(err)
 			return
 		}
-		if j, err := json.MarshalIndent(target, "", "  "); err == nil {
-			fmt.Println(string(j))
-		}
+		// if j, err := json.MarshalIndent(target, "", "  "); err == nil {
+		// 	fmt.Println(string(j))
+		// }
 	} else {
 		fmt.Println(temp)
 		fmt.Printf("%x\n", segment.Payload)

@@ -64,7 +64,7 @@ var ProtocolStringMap = map[Protocol]string{
 
 var ProtocolMessageMap = map[Protocol]map[Subprotocol]any{
 	ProtocolHandshake: {
-		SubprotocolHandshakeProposedVersion: &MessageHandshake{},
+		SubprotocolHandshakeProposedVersion: &MessageProposedVersions{},
 		SubprotocolHandshakeAcceptVersion:   &MessageAcceptVersion{},
 	},
 	ProtocolChainSync: {
@@ -106,7 +106,7 @@ func ProtocolToMessage(protocol Protocol, subprotocol Subprotocol) (message any,
 }
 
 var MessageProtocolMap = map[reflect.Type]Protocol{
-	reflect.TypeOf(&MessageHandshake{}):            ProtocolHandshake,
+	reflect.TypeOf(&MessageProposedVersions{}):     ProtocolHandshake,
 	reflect.TypeOf(&MessageAcceptVersion{}):        ProtocolHandshake,
 	reflect.TypeOf(&MessageChainSyncRequestNext{}): ProtocolChainSync,
 	reflect.TypeOf(&MessageAwaitReply{}):           ProtocolChainSync,
@@ -125,7 +125,7 @@ var MessageProtocolMap = map[reflect.Type]Protocol{
 }
 
 var MessageSubprotocolMap = map[any]Subprotocol{
-	reflect.TypeOf(&MessageHandshake{}):            SubprotocolHandshakeProposedVersion,
+	reflect.TypeOf(&MessageProposedVersions{}):     SubprotocolHandshakeProposedVersion,
 	reflect.TypeOf(&MessageAcceptVersion{}):        SubprotocolHandshakeAcceptVersion,
 	reflect.TypeOf(&MessageChainSyncRequestNext{}): SubprotocolChainSync0Unknown,
 	reflect.TypeOf(&MessageAwaitReply{}):           SubprotocolChainSyncAwaitReply,

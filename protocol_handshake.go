@@ -20,7 +20,7 @@ const (
 	N2NProtocolV13
 )
 
-type MessageHandshake struct {
+type MessageProposedVersions struct {
 	WithSubprotocol
 	VersionMap VersionMap
 }
@@ -104,7 +104,7 @@ func defaultVersionMap(network NetworkMagic) VersionMap {
 }
 
 func encodeVersionMap() {
-	h := MessageHandshake{
+	h := MessageProposedVersions{
 		WithSubprotocol: WithSubprotocol{
 			Subprotocol: 0,
 		},

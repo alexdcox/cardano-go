@@ -7,11 +7,26 @@ import (
 	"github.com/rs/zerolog"
 )
 
+type Direction bool
+
+func (d Direction) String() string {
+	if d == DirectionIn {
+		return "IN"
+	}
+	return "OUT"
+}
+
+const (
+	DirectionIn  Direction = false
+	DirectionOut Direction = true
+)
+
 type Segment struct {
 	Timestamp     uint32
 	Protocol      Protocol
 	PayloadLength uint16
 	Payload       []byte
+	Direction     Direction
 }
 
 func (s *Segment) UnmarshalDataItem(data []byte) (length int, err error) {
@@ -95,26 +110,17 @@ func (s *Segment) Append(data []byte) (read int) {
 type SegmentReader struct {
 	s         *Segment
 	hasInit   bool
-	Direction string
+	Direction Direction
 	Log       zerolog.Logger
-	// Stream      chan *Segment
-	// StreamCount uint64
-}
-
-func (r *SegmentReader) Init() {
-	// r.Stream = make(chan *Segment, 100)
+	Stream    chan *Segment
 }
 
 func (r *SegmentReader) Read(p []byte) (n int, err error) {
-	if !r.hasInit {
-		r.Init()
-	}
-
-	r.Log.Info().Msgf("%s %d bytes", r.Direction, len(p))
+	r.Log.Debug().Msgf("%s %d bytes", r.Direction, len(p))
 
 	printSegmentStatus := func() {
 		r.Log.Trace().Msgf(
-			"segment %d(%d)/%d(%d), complete: %t, read: %d",
+			"reading segment %d(%d)/%d(%d), complete: %t, read: %d",
 			len(r.s.Payload),
 			len(r.s.Payload)+8,
 			r.s.PayloadLength,
@@ -126,12 +132,8 @@ func (r *SegmentReader) Read(p []byte) (n int, err error) {
 
 	handleIfComplete := func() bool {
 		if r.s.Complete() {
-			r.Log.Debug().Msgf("segment complete")
-			_, err = handleSegment(r.s)
-			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
-			}
-			// r.Stream <- r.s
+			r.Log.Debug().Msgf("%s segment complete", r.Direction)
+			r.Stream <- r.s
 			r.s = nil
 			return true
 		}
@@ -140,7 +142,9 @@ func (r *SegmentReader) Read(p []byte) (n int, err error) {
 
 	for n < len(p) {
 		if r.s == nil {
-			r.s = &Segment{}
+			r.s = &Segment{
+				Direction: r.Direction,
+			}
 			read, err2 := r.s.UnmarshalDataItem(p[n:])
 			if err2 != nil {
 				err = err2

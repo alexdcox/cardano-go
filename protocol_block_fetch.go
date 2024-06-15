@@ -2,8 +2,8 @@ package main
 
 type MessageRequestRange struct {
 	WithSubprotocol
-	From Point
-	To   Point
+	From Point `json:"from"`
+	To   Point `json:"to"`
 }
 
 type MessageClientDone struct {
@@ -20,7 +20,7 @@ type MessageNoBlocks struct {
 
 type MessageBlock struct {
 	WithSubprotocol
-	BlockData ByteString
+	Block Block
 }
 type MessageBatchDone struct {
 	WithSubprotocol

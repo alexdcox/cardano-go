@@ -107,9 +107,16 @@ func (s *Segment) Append(data []byte) (read int) {
 	return
 }
 
+func NewSegmentReader(direction Direction) *SegmentReader {
+	return &SegmentReader{
+		Direction: direction,
+		Log:       zerolog.Nop(),
+		Stream:    make(chan *Segment),
+	}
+}
+
 type SegmentReader struct {
 	s         *Segment
-	hasInit   bool
 	Direction Direction
 	Log       zerolog.Logger
 	Stream    chan *Segment

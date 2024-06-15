@@ -14,13 +14,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
-//go:embed _data/block1
+//go:embed _data/rollforwardheader
 var hexString string
 
 var target string
+var nodeHostPort string
 
 func main() {
 	flag.StringVar(&target, "target", "", "")
+	flag.StringVar(&nodeHostPort, "node", "", "")
 	flag.Parse()
 
 	decodedHex, err := hex.DecodeString(hexString)
@@ -40,6 +42,8 @@ func main() {
 	// 	decodeProxyFiles()
 	case "test-deserialize-serialize":
 		testDeserializeSerialize()
+	case "client":
+		testClient()
 	}
 
 	// decode()
@@ -54,7 +58,34 @@ func main() {
 	// encode()
 	// encodeVersionMap()
 	// stripInvalidMapKeys()
-	testDeserializeSerialize()
+	// testDeserializeSerialize()
+}
+
+func testClient() {
+	client := NewClient(nodeHostPort)
+
+	err := client.Dial()
+	if err != nil {
+		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	err = client.Handshake()
+	if err != nil {
+		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	go client.KeepAlive()
+
+	block, err := client.FetchBlock(Point{})
+	if err != nil {
+		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	log.Info().Msgf(
+		"block number: %v, transactions: %d",
+		block.Data.Header.Body.Number,
+		len(block.Data.TransactionBodies),
+	)
 }
 
 func printSegmentsFromStream() {
@@ -120,12 +151,12 @@ func testDeserializeSerialize() {
 	go printSegmentsFromStream()
 	inReader := &SegmentReader{
 		Direction: DirectionIn,
-		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
+		Log:       log.Level(zerolog.TraceLevel),
 		Stream:    globalSegmentStream,
 	}
 	outReader := &SegmentReader{
 		Direction: DirectionOut,
-		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
+		Log:       log.Level(zerolog.TraceLevel),
 		Stream:    globalSegmentStream,
 	}
 	var err error
@@ -188,7 +219,7 @@ func decodeBlockMessages() {
 				log.Fatal().Msgf("%+v", errors.WithStack(err))
 			}
 
-			_ = os.WriteFile(fmt.Sprintf("block%d", i), []byte(fmt.Sprintf("%x", b.BlockData)), os.ModePerm)
+			_ = os.WriteFile(fmt.Sprintf("block%d", i), []byte(fmt.Sprintf("%x", b.Block)), os.ModePerm)
 		}
 	}
 }
@@ -222,9 +253,9 @@ func handleSegment(segment *Segment) (target any, err error) {
 			err = errors.WithStack(err)
 			return
 		}
-		// if j, err := json.MarshalIndent(target, "", "  "); err == nil {
-		// 	fmt.Println(string(j))
-		// }
+		if j, err := json.MarshalIndent(target, "", "  "); err == nil {
+			fmt.Println(string(j))
+		}
 	} else {
 		fmt.Println(temp)
 		fmt.Printf("%x\n", segment.Payload)

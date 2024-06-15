@@ -20,9 +20,23 @@ const (
 	N2NProtocolV13
 )
 
-type MessageProposedVersions struct {
+type MessageProposeVersions struct {
 	WithSubprotocol
-	VersionMap VersionMap
+	VersionMap VersionMap `json:"versionMap"`
+}
+
+type MessageAcceptVersion struct {
+	WithSubprotocol
+	Version     uint16        `json:"version,omitempty"`
+	VersionData VersionField2 `json:"versionData,omitempty"`
+}
+
+type MessageRefuse struct {
+	WithSubprotocol
+}
+
+type MessageQueryReply struct {
+	WithSubprotocol
 }
 
 type VersionMap struct {
@@ -39,9 +53,9 @@ type VersionMap struct {
 }
 
 type VersionField1 struct {
-	_                          struct{} `cbor:",toarray"`
-	Network                    NetworkMagic
-	InitiatorOnlyDiffusionMode bool
+	_                          struct{}     `cbor:",toarray"`
+	Network                    NetworkMagic `json:"network"`
+	InitiatorOnlyDiffusionMode bool         `json:"initiatorOnlyDiffusionMode"`
 }
 
 type VersionField2 struct {
@@ -104,7 +118,7 @@ func defaultVersionMap(network NetworkMagic) VersionMap {
 }
 
 func encodeVersionMap() {
-	h := MessageProposedVersions{
+	h := MessageProposeVersions{
 		WithSubprotocol: WithSubprotocol{
 			Subprotocol: 0,
 		},
@@ -118,10 +132,4 @@ func encodeVersionMap() {
 
 	fmt.Printf("%x\n", b)
 
-}
-
-type MessageAcceptVersion struct {
-	WithSubprotocol
-	Version     uint16        `json:"version,omitempty"`
-	VersionData VersionField2 `json:"versionData,omitempty"`
 }

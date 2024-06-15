@@ -1,21 +1,30 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"net"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
 )
 
+const DefaultKeepAliveInterval = time.Second * 30
+
 func NewClient(hostport string) *Client {
 	return &Client{
-		hostport: hostport,
+		hostport:          hostport,
+		keepAliveInterval: DefaultKeepAliveInterval,
+		inSegmentReader:   NewSegmentReader(DirectionIn),
 	}
 }
 
 type Client struct {
-	conn     net.Conn
-	hostport string
+	conn              net.Conn
+	hostport          string
+	keepAliveInterval time.Duration
+	inSegmentReader   *SegmentReader
 }
 
 func (c *Client) Dial() (err error) {
@@ -25,7 +34,7 @@ func (c *Client) Dial() (err error) {
 }
 
 func (c *Client) Handshake() (err error) {
-	message := MessageProposedVersions{
+	message := MessageProposeVersions{
 		WithSubprotocol: WithSubprotocol{
 			Subprotocol: SubprotocolHandshakeProposedVersion,
 		},
@@ -39,7 +48,52 @@ func (c *Client) Handshake() (err error) {
 		},
 	}
 
-	return c.SendMessage(message)
+	err = c.SendMessage(message)
+	if err != nil {
+		return
+	}
+
+	select {
+	case segment := <-c.inSegmentReader.Stream:
+		ireply, err2 := handleSegment(segment)
+		if err2 != nil {
+			err = err2
+			return
+		}
+
+		if reply, ok := ireply.(*MessageAcceptVersion); ok {
+			log.Info().Msgf("handshake ok, node accepted version %d", reply.Version)
+			return
+		} else {
+			err = errors.Errorf(
+				"handshake failed, received message %T, expected %T",
+				ireply,
+				&MessageAcceptVersion{},
+			)
+		}
+
+	case <-time.After(time.Second * 3):
+		err = errors.New("timeout while waiting for node version response")
+	}
+
+	return
+}
+
+func (c *Client) KeepAlive() {
+	for {
+		time.Sleep(time.Second * 30)
+
+		cookieBytes := make([]byte, 4)
+		_, _ = rand.Read(cookieBytes)
+		cookie := binary.BigEndian.Uint16(cookieBytes)
+
+		err := c.SendMessage(&MessageKeepAlive{
+			Cookie: cookie,
+		})
+		if err != nil {
+			log.Error().Err(err)
+		}
+	}
 }
 
 func (c *Client) SendMessage(message any) (err error) {
@@ -61,6 +115,17 @@ func (c *Client) SendMessage(message any) (err error) {
 			len(messageCbor),
 			n,
 		)
+	}
+
+	return
+}
+
+func (c *Client) FetchBlock(point Point) (block Block, err error) {
+	panic("not implemented")
+
+	err = c.SendMessage(&MessageStartBatch{})
+	if err != nil {
+		return
 	}
 
 	return

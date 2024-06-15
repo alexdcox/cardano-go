@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"reflect"
 
+	"github.com/alexdcox/dashutil/base58"
 	"github.com/pkg/errors"
 )
 
@@ -12,7 +14,7 @@ type Subprotocol uint16
 
 const (
 	ProtocolHandshake Protocol = iota
-	ProtocolMISSING
+	ProtocolDeltaQueue
 	ProtocolChainSync
 	ProtocolBlockFetch
 	ProtocolTxSubmission
@@ -20,18 +22,19 @@ const (
 	ProtocolLocalTx
 	ProtocolLocalState
 	ProtocolKeepAlive
-	ProtocolLocalTxMonitor
 )
 const (
 	SubprotocolHandshakeProposedVersion Subprotocol = iota
 	SubprotocolHandshakeAcceptVersion
+	SubprotocolHandshakeRefuse
+	SubprotocolHandshakeQueryReply
 )
 const (
-	SubprotocolChainSync0Unknown Subprotocol = iota
+	SubprotocolChainSyncRequestNext Subprotocol = iota
 	SubprotocolChainSyncAwaitReply
 	SubprotocolChainSyncRollForward
 	SubprotocolChainSyncRollBackward
-	SubprotocolChainSync4Unknown
+	SubprotocolChainSyncFindIntersect
 	SubprotocolChainSyncIntersectFound
 	SubprotocolChainSyncIntersectNotFound
 	SubprotocolChainSyncDone
@@ -59,21 +62,25 @@ var ProtocolStringMap = map[Protocol]string{
 	ProtocolLocalTx:        "local tx",
 	ProtocolLocalState:     "local state",
 	ProtocolKeepAlive:      "keep alive",
-	ProtocolLocalTxMonitor: "local tx monitor",
+	// ProtocolLocalTxMonitor: "local tx monitor",
 }
 
 var ProtocolMessageMap = map[Protocol]map[Subprotocol]any{
 	ProtocolHandshake: {
-		SubprotocolHandshakeProposedVersion: &MessageProposedVersions{},
+		SubprotocolHandshakeProposedVersion: &MessageProposeVersions{},
 		SubprotocolHandshakeAcceptVersion:   &MessageAcceptVersion{},
+		SubprotocolHandshakeRefuse:          &MessageRefuse{},
+		SubprotocolHandshakeQueryReply:      &MessageQueryReply{},
 	},
 	ProtocolChainSync: {
-		SubprotocolChainSync0Unknown:       &MessageChainSyncRequestNext{},
-		SubprotocolChainSyncAwaitReply:     &MessageAwaitReply{},
-		SubprotocolChainSyncRollForward:    &MessageRollForward{},
-		SubprotocolChainSyncRollBackward:   &MessageRollBackward{},
-		SubprotocolChainSync4Unknown:       &MessageChainSync4TODO{},
-		SubprotocolChainSyncIntersectFound: &MessageIntersectFound{},
+		SubprotocolChainSyncRequestNext:       &MessageRequestNext{},
+		SubprotocolChainSyncAwaitReply:        &MessageAwaitReply{},
+		SubprotocolChainSyncRollForward:       &MessageRollForward{},
+		SubprotocolChainSyncRollBackward:      &MessageRollBackward{},
+		SubprotocolChainSyncFindIntersect:     &MessageFindIntersect{},
+		SubprotocolChainSyncIntersectFound:    &MessageIntersectFound{},
+		SubprotocolChainSyncIntersectNotFound: &MessageIntersectNotFound{},
+		SubprotocolChainSyncDone:              &MessageChainSyncDone{},
 	},
 	ProtocolBlockFetch: {
 		SubprotocolBlockFetchRequestRange: &MessageRequestRange{},
@@ -84,9 +91,10 @@ var ProtocolMessageMap = map[Protocol]map[Subprotocol]any{
 		SubprotocolBlockFetchBatchDone:    &MessageBatchDone{},
 	},
 	ProtocolKeepAlive: {
-		SubprotocolKeepAliveEcho: &MessageKeepAliveEcho{},
-		SubprotocolKeepAlivePing: &MessageKeepAlivePing{},
+		SubprotocolKeepAliveEcho: &MessageKeepAliveResponse{},
+		SubprotocolKeepAlivePing: &MessageKeepAlive{},
 	},
+	ProtocolLocalTx: {},
 }
 
 func ProtocolToMessage(protocol Protocol, subprotocol Subprotocol) (message any, err error) {
@@ -106,41 +114,49 @@ func ProtocolToMessage(protocol Protocol, subprotocol Subprotocol) (message any,
 }
 
 var MessageProtocolMap = map[reflect.Type]Protocol{
-	reflect.TypeOf(&MessageProposedVersions{}):     ProtocolHandshake,
-	reflect.TypeOf(&MessageAcceptVersion{}):        ProtocolHandshake,
-	reflect.TypeOf(&MessageChainSyncRequestNext{}): ProtocolChainSync,
-	reflect.TypeOf(&MessageAwaitReply{}):           ProtocolChainSync,
-	reflect.TypeOf(&MessageRollForward{}):          ProtocolChainSync,
-	reflect.TypeOf(&MessageRollBackward{}):         ProtocolChainSync,
-	reflect.TypeOf(&MessageChainSync4TODO{}):       ProtocolChainSync,
-	reflect.TypeOf(&MessageIntersectFound{}):       ProtocolChainSync,
-	reflect.TypeOf(&MessageRequestRange{}):         ProtocolBlockFetch,
-	reflect.TypeOf(&MessageClientDone{}):           ProtocolBlockFetch,
-	reflect.TypeOf(&MessageStartBatch{}):           ProtocolBlockFetch,
-	reflect.TypeOf(&MessageNoBlocks{}):             ProtocolBlockFetch,
-	reflect.TypeOf(&MessageBlock{}):                ProtocolBlockFetch,
-	reflect.TypeOf(&MessageBatchDone{}):            ProtocolBlockFetch,
-	reflect.TypeOf(&MessageKeepAliveEcho{}):        ProtocolKeepAlive,
-	reflect.TypeOf(&MessageKeepAlivePing{}):        ProtocolKeepAlive,
+	reflect.TypeOf(&MessageProposeVersions{}):   ProtocolHandshake,
+	reflect.TypeOf(&MessageRefuse{}):            ProtocolHandshake,
+	reflect.TypeOf(&MessageQueryReply{}):        ProtocolHandshake,
+	reflect.TypeOf(&MessageAcceptVersion{}):     ProtocolHandshake,
+	reflect.TypeOf(&MessageRequestNext{}):       ProtocolChainSync,
+	reflect.TypeOf(&MessageAwaitReply{}):        ProtocolChainSync,
+	reflect.TypeOf(&MessageRollForward{}):       ProtocolChainSync,
+	reflect.TypeOf(&MessageRollBackward{}):      ProtocolChainSync,
+	reflect.TypeOf(&MessageFindIntersect{}):     ProtocolChainSync,
+	reflect.TypeOf(&MessageIntersectFound{}):    ProtocolChainSync,
+	reflect.TypeOf(&MessageIntersectNotFound{}): ProtocolChainSync,
+	reflect.TypeOf(&MessageChainSyncDone{}):     ProtocolChainSync,
+	reflect.TypeOf(&MessageRequestRange{}):      ProtocolBlockFetch,
+	reflect.TypeOf(&MessageClientDone{}):        ProtocolBlockFetch,
+	reflect.TypeOf(&MessageStartBatch{}):        ProtocolBlockFetch,
+	reflect.TypeOf(&MessageNoBlocks{}):          ProtocolBlockFetch,
+	reflect.TypeOf(&MessageBlock{}):             ProtocolBlockFetch,
+	reflect.TypeOf(&MessageBatchDone{}):         ProtocolBlockFetch,
+	reflect.TypeOf(&MessageKeepAliveResponse{}): ProtocolKeepAlive,
+	reflect.TypeOf(&MessageKeepAlive{}):         ProtocolKeepAlive,
 }
 
 var MessageSubprotocolMap = map[any]Subprotocol{
-	reflect.TypeOf(&MessageProposedVersions{}):     SubprotocolHandshakeProposedVersion,
-	reflect.TypeOf(&MessageAcceptVersion{}):        SubprotocolHandshakeAcceptVersion,
-	reflect.TypeOf(&MessageChainSyncRequestNext{}): SubprotocolChainSync0Unknown,
-	reflect.TypeOf(&MessageAwaitReply{}):           SubprotocolChainSyncAwaitReply,
-	reflect.TypeOf(&MessageRollForward{}):          SubprotocolChainSyncRollForward,
-	reflect.TypeOf(&MessageRollBackward{}):         SubprotocolChainSyncRollBackward,
-	reflect.TypeOf(&MessageChainSync4TODO{}):       SubprotocolChainSync4Unknown,
-	reflect.TypeOf(&MessageIntersectFound{}):       SubprotocolChainSyncIntersectFound,
-	reflect.TypeOf(&MessageRequestRange{}):         SubprotocolBlockFetchRequestRange,
-	reflect.TypeOf(&MessageClientDone{}):           SubprotocolBlockFetchClientDone,
-	reflect.TypeOf(&MessageStartBatch{}):           SubprotocolBlockFetchStartBatch,
-	reflect.TypeOf(&MessageNoBlocks{}):             SubprotocolBlockFetchNoBlocks,
-	reflect.TypeOf(&MessageBlock{}):                SubprotocolBlockFetchBlock,
-	reflect.TypeOf(&MessageBatchDone{}):            SubprotocolBlockFetchBatchDone,
-	reflect.TypeOf(&MessageKeepAliveEcho{}):        SubprotocolKeepAliveEcho,
-	reflect.TypeOf(&MessageKeepAlivePing{}):        SubprotocolKeepAlivePing,
+	reflect.TypeOf(&MessageProposeVersions{}):   SubprotocolHandshakeProposedVersion,
+	reflect.TypeOf(&MessageRefuse{}):            SubprotocolHandshakeRefuse,
+	reflect.TypeOf(&MessageQueryReply{}):        SubprotocolHandshakeQueryReply,
+	reflect.TypeOf(&MessageAcceptVersion{}):     SubprotocolHandshakeAcceptVersion,
+	reflect.TypeOf(&MessageRequestNext{}):       SubprotocolChainSyncRequestNext,
+	reflect.TypeOf(&MessageAwaitReply{}):        SubprotocolChainSyncAwaitReply,
+	reflect.TypeOf(&MessageRollForward{}):       SubprotocolChainSyncRollForward,
+	reflect.TypeOf(&MessageRollBackward{}):      SubprotocolChainSyncRollBackward,
+	reflect.TypeOf(&MessageFindIntersect{}):     SubprotocolChainSyncFindIntersect,
+	reflect.TypeOf(&MessageIntersectFound{}):    SubprotocolChainSyncIntersectFound,
+	reflect.TypeOf(&MessageIntersectNotFound{}): SubprotocolChainSyncIntersectNotFound,
+	reflect.TypeOf(&MessageChainSyncDone{}):     SubprotocolChainSyncDone,
+	reflect.TypeOf(&MessageRequestRange{}):      SubprotocolBlockFetchRequestRange,
+	reflect.TypeOf(&MessageClientDone{}):        SubprotocolBlockFetchClientDone,
+	reflect.TypeOf(&MessageStartBatch{}):        SubprotocolBlockFetchStartBatch,
+	reflect.TypeOf(&MessageNoBlocks{}):          SubprotocolBlockFetchNoBlocks,
+	reflect.TypeOf(&MessageBlock{}):             SubprotocolBlockFetchBlock,
+	reflect.TypeOf(&MessageBatchDone{}):         SubprotocolBlockFetchBatchDone,
+	reflect.TypeOf(&MessageKeepAliveResponse{}): SubprotocolKeepAliveEcho,
+	reflect.TypeOf(&MessageKeepAlive{}):         SubprotocolKeepAlivePing,
 }
 
 func MessageToProtocol(message any) (protocol Protocol, subprotocol Subprotocol, err error) {
@@ -167,14 +183,21 @@ func (p Protocol) String() string {
 	}
 }
 
-type ByteString []uint8
+type HexString string
 
-func (b ByteString) String() string {
-	return fmt.Sprintf("%x", string(b))
+func (hs HexString) Bytes() (b []byte) {
+	b, _ = hex.DecodeString(string(hs))
+	return
 }
 
-func (b ByteString) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + fmt.Sprintf("%x", b) + `"`), nil
+type Base58Bytes []byte
+
+func (b Base58Bytes) String() string {
+	return base58.Encode(b)
+}
+
+func (b Base58Bytes) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, b)), nil
 }
 
 type WithSubprotocol struct {
@@ -185,5 +208,17 @@ type WithSubprotocol struct {
 type NetworkMagic uint64
 
 const (
-	NetworkMagicMainnet NetworkMagic = 764824073
+	NetworkMagicMainnet       NetworkMagic = 764824073
+	NetworkMagicLegacyTestnet NetworkMagic = 1097911063
+	NetworkMagicPreProd       NetworkMagic = 1
+	NetworkMagicPreview       NetworkMagic = 2
+	NetworkMagicSanchonet     NetworkMagic = 4
+)
+
+const (
+	RelayMainnet   = "relays-new.cardano-mainnet.iohk.io:3001"
+	RelayTestnet   = "relays-new.cardano-testnet.iohkdev.io:3001"
+	RelayPreProd   = "preprod-node.world.dev.cardano.org:30000"
+	RelayPreview   = "preview-node.world.dev.cardano.org:30002"
+	RelaySanchonet = "sanchonet-node.play.dev.cardano.org:3001"
 )

@@ -122,21 +122,21 @@ func (a *AuxData) UnmarshalCBOR(bytes []byte) (err error) {
 type BlockHeader struct {
 	_    struct{} `cbor:",toarray"`
 	Body struct {
-		_               struct{}   `cbor:",toarray"`
-		Number          int        `json:"number,omitempty"`
-		Slot            int        `json:"slot,omitempty"`
-		PrevHash        ByteString `json:"prevHash,omitempty"`
-		IssuerVkey      ByteString `json:"issuerVkey,omitempty"`
-		VrfKey          ByteString `json:"vrfKey,omitempty"`
-		VrfResult       VrfCert    `json:"vrfResult,omitempty"`
-		Size            int        `json:"size,omitempty"`
-		Hash            ByteString `json:"hash,omitempty"`
+		_               struct{}    `cbor:",toarray"`
+		Number          int         `json:"number,omitempty"`
+		Slot            int         `json:"slot,omitempty"`
+		PrevHash        Base58Bytes `json:"prevHash,omitempty"`
+		IssuerVkey      Base58Bytes `json:"issuerVkey,omitempty"`
+		VrfKey          Base58Bytes `json:"vrfKey,omitempty"`
+		VrfResult       VrfCert     `json:"vrfResult,omitempty"`
+		Size            int         `json:"size,omitempty"`
+		Hash            Base58Bytes `json:"hash,omitempty"`
 		OperationalCert struct {
-			_         struct{}   `cbor:",toarray"`
-			HotVkey   ByteString `json:"hotVkey,omitempty"`
-			Sequence  int        `json:"sequence,omitempty"`
-			KesPeriod int        `json:"kesPeriod,omitempty"`
-			Sigma     ByteString `json:"sigma,omitempty"`
+			_         struct{}    `cbor:",toarray"`
+			HotVkey   Base58Bytes `json:"hotVkey,omitempty"`
+			Sequence  int         `json:"sequence,omitempty"`
+			KesPeriod int         `json:"kesPeriod,omitempty"`
+			Sigma     Base58Bytes `json:"sigma,omitempty"`
 		} `json:"operationalCert"`
 		ProtocolVersion struct {
 			_   struct{} `cbor:",toarray"`
@@ -144,7 +144,7 @@ type BlockHeader struct {
 			Pt2 int      `json:"pt2,omitempty"`
 		} `json:"protocolVersion"`
 	} `json:"body"`
-	Signature ByteString `json:"signature,omitempty"`
+	Signature Base58Bytes `json:"signature,omitempty"`
 }
 
 type TransactionBody struct {
@@ -155,12 +155,12 @@ type TransactionBody struct {
 	Certificates          any                                           `cbor:"4,keyasint" json:"certificates,omitempty"`
 	WithdrawalMap         map[cbor.ByteString]uint64                    `cbor:"5,keyasint" json:"withdrawalMap,omitempty"`
 	UpdateDI              any                                           `cbor:"6,keyasint" json:"updateDI,omitempty"`
-	MetadataHash          ByteString                                    `cbor:"7,keyasint" json:"metadataHash,omitempty"`
+	MetadataHash          Base58Bytes                                   `cbor:"7,keyasint" json:"metadataHash,omitempty"`
 	ValidityStartInterval int                                           `cbor:"8,keyasint" json:"validityStartInterval,omitempty"`
 	MintMap               map[cbor.ByteString]map[cbor.ByteString]int64 `cbor:"9,keyasint" json:"mintMap,omitempty"`
-	ScriptDataHash        ByteString                                    `cbor:"11,keyasint" json:"scriptDataHash,omitempty"`
+	ScriptDataHash        Base58Bytes                                   `cbor:"11,keyasint" json:"scriptDataHash,omitempty"`
 	CollateralInputs      []CollateralInput                             `cbor:"13,keyasint" json:"collateralInputs,omitempty"`
-	RequiredSigners       []ByteString                                  `cbor:"14,keyasint" json:"requiredSigners,omitempty"`
+	RequiredSigners       []Base58Bytes                                 `cbor:"14,keyasint" json:"requiredSigners,omitempty"`
 	NetworkId             int                                           `cbor:"15,keyasint" json:"networkId,omitempty"`
 	CollateralReturn      SubtypeOf[CollateralReturn]                   `cbor:"16,keyasint" json:"collateralReturn,omitempty"`
 	TotalCollateral       int                                           `cbor:"17,keyasint" json:"totalCollateral,omitempty"`
@@ -172,9 +172,9 @@ type TransactionBody struct {
 }
 
 type CollateralInput struct {
-	_ struct{}   `cbor:",toarray" json:"_"`
-	A ByteString `json:"a,omitempty"`
-	B int        `json:"b,omitempty"`
+	_ struct{}    `cbor:",toarray" json:"_"`
+	A Base58Bytes `json:"a,omitempty"`
+	B int         `json:"b,omitempty"`
 }
 
 type CBORUnmarshalError struct {
@@ -207,29 +207,29 @@ func (r CollateralReturn) Subtypes() []any {
 
 type CollateralReturnA struct {
 	_ struct{} `cbor:",toarray" json:"_"`
-	A ByteString
+	A Base58Bytes
 	B AmountData
 }
 
 type CollateralReturnB struct {
 	_ struct{} `cbor:",toarray" json:"_"`
-	A ByteString
+	A Base58Bytes
 	B uint64
 }
 
 type CollateralReturnC struct {
-	A ByteString `cbor:"0,keyasint"`
-	B uint64     `cbor:"1,keyasint"`
+	A Base58Bytes `cbor:"0,keyasint"`
+	B uint64      `cbor:"1,keyasint"`
 }
 
 type CollateralReturnD struct {
-	A ByteString `cbor:"0,keyasint"`
-	B AmountData `cbor:"1,keyasint"`
+	A Base58Bytes `cbor:"0,keyasint"`
+	B AmountData  `cbor:"1,keyasint"`
 }
 
 type TransactionInput struct {
 	_     struct{} `cbor:",toarray"`
-	Txid  ByteString
+	Txid  Base58Bytes
 	Index int
 }
 
@@ -280,51 +280,51 @@ func (t AmountData) MarshalJSON() ([]byte, error) {
 type TransactionOutputExtra struct {
 	_ struct{} `cbor:",toarray"`
 	A uint64
-	B ByteString
+	B Base58Bytes
 }
 
 type TransactionOutputTest struct {
-	Address    ByteString                       `cbor:"0,keyasint" json:"address"`
+	Address    Base58Bytes                      `cbor:"0,keyasint" json:"address"`
 	AmountData AmountData                       `cbor:"1,keyasint" json:"amountData"`
 	Extra      Optional[TransactionOutputExtra] `cbor:"2,keyasint" json:"extra"`
 }
 
 type TransactionOutputTest2 struct {
-	Address ByteString `cbor:"0,keyasint" json:"address"`
-	Amount  uint64     `cbor:"1,keyasint" json:"amount"`
+	Address Base58Bytes `cbor:"0,keyasint" json:"address"`
+	Amount  uint64      `cbor:"1,keyasint" json:"amount"`
 }
 
 type TransactionOutputTest3 struct {
 	_        struct{} `cbor:",toarray"`
-	Address  ByteString
+	Address  Base58Bytes
 	Amount   uint64
-	Address2 ByteString
+	Address2 Base58Bytes
 }
 
 type TransactionOutputMappedExtraArray struct {
-	_          struct{}   `cbor:",toarray"`
-	Address    ByteString `json:"address"`
-	AmountData AmountData `json:"amountData"`
-	Extra      []any      `json:"extra"`
+	_          struct{}    `cbor:",toarray"`
+	Address    Base58Bytes `json:"address"`
+	AmountData AmountData  `json:"amountData"`
+	Extra      []any       `json:"extra"`
 }
 
 type TransactionOutputMappedExtraAddress struct {
-	_          struct{}   `cbor:",toarray"`
-	Address    ByteString `json:"address"`
-	AmountData AmountData `json:"amountData"`
-	Extra      ByteString `json:"extra"`
+	_          struct{}    `cbor:",toarray"`
+	Address    Base58Bytes `json:"address"`
+	AmountData AmountData  `json:"amountData"`
+	Extra      Base58Bytes `json:"extra"`
 }
 
 type TransactionOutputMapped struct {
-	_          struct{}   `cbor:",toarray"`
-	Address    ByteString `json:"address"`
-	AmountData AmountData `json:"amountData"`
+	_          struct{}    `cbor:",toarray"`
+	Address    Base58Bytes `json:"address"`
+	AmountData AmountData  `json:"amountData"`
 }
 
 type TransactionOutputSimple struct {
-	_       struct{}   `cbor:",toarray"`
-	Address ByteString `json:"address"`
-	Amount  uint64     `json:"amount"`
+	_       struct{}    `cbor:",toarray"`
+	Address Base58Bytes `json:"address"`
+	Amount  uint64      `json:"amount"`
 }
 
 type TransactionWitnessSet struct {
@@ -339,9 +339,34 @@ type TransactionWitnessSet struct {
 }
 
 type Point struct {
-	_    struct{} `cbor:",toarray"`
-	Slot uint64   `cbor:",omitempty" json:"slot"`
-	Hash []byte   `chor:",omitempty" json:"hash"`
+	_    struct{}    `cbor:",toarray"`
+	Slot uint64      `cbor:",omitempty" json:"slot"`
+	Hash Base58Bytes `chor:",omitempty" json:"hash"`
+}
+
+var WellKnownMainnetPoint Point = Point{
+	Slot: 16588737,
+	Hash: HexString("4e9bbbb67e3ae262133d94c3da5bffce7b1127fc436e7433b87668dba34c354a").Bytes(),
+}
+
+var WellKnownTestnetPoint Point = Point{
+	Slot: 13694363,
+	Hash: HexString("b596f9739b647ab5af901c8fc6f75791e262b0aeba81994a1d622543459734f2").Bytes(),
+}
+
+var WellKnownPreprodPoint Point = Point{
+	Slot: 87480,
+	Hash: HexString("528c3e6a00c82dd5331b116103b6e427acf447891ce3ade6c4c7a61d2f0a2b1c").Bytes(),
+}
+
+var WellKnownPreviewPoint Point = Point{
+	Slot: 8000,
+	Hash: HexString("70da683c00985e23903da00656fae96644e1f31dce914aab4ed50e35e4c4842d").Bytes(),
+}
+
+var WellKnownSanchonetPoint Point = Point{
+	Slot: 20,
+	Hash: HexString("6a7d97aae2a65ca790fd14802808b7fce00a3362bd7b21c4ed4ccb4296783b98").Bytes(),
 }
 
 func (p *Point) UnmarshalCBOR(bytes []byte) (err error) {
@@ -384,9 +409,9 @@ type Range struct {
 }
 
 type VrfCert struct {
-	_   struct{}   `cbor:",toarray"`
-	Pt1 ByteString `json:"pt1"`
-	Pt2 ByteString `json:"pt2"`
+	_   struct{}    `cbor:",toarray"`
+	Pt1 Base58Bytes `json:"pt1"`
+	Pt2 Base58Bytes `json:"pt2"`
 }
 
 type HasSubtypes interface {

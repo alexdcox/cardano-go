@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
@@ -31,6 +32,8 @@ func main() {
 	}
 	_ = decodedHex
 
+	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+
 	switch target {
 	case "block":
 		decodeBlock(decodedHex)
@@ -45,6 +48,13 @@ func main() {
 	case "client":
 		testClient()
 	}
+
+	h, err := hex.DecodeString("8105")
+	if err != nil {
+		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	fmt.Println(bytes.Equal(h, []byte{0x81, 0x05}))
 
 	// decode()
 	// decodeAuxData()
@@ -76,7 +86,7 @@ func testClient() {
 
 	go client.KeepAlive()
 
-	block, err := client.FetchBlock(Point{})
+	block, err := client.FetchBlock(WellKnownMainnetPoint)
 	if err != nil {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
@@ -86,23 +96,6 @@ func testClient() {
 		block.Data.Header.Body.Number,
 		len(block.Data.TransactionBodies),
 	)
-}
-
-func printSegmentsFromStream() {
-	// log.Info().Msg("streaming segments")
-	for {
-		segment, ok := <-globalSegmentStream
-		if ok {
-			t, err := handleSegment(segment)
-			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
-			}
-			// fmt.Printf("%T\n", t)
-			_ = t
-		} else {
-			log.Error().Msg("unable to read segment")
-		}
-	}
 }
 
 var globalSegmentStream chan *Segment
@@ -148,21 +141,39 @@ func testDeserializeSerialize() {
 	dir := "_data/proxy-20240610-182733/"
 	items, _ := os.ReadDir(dir)
 	globalSegmentStream = make(chan *Segment)
-	go printSegmentsFromStream()
 	inReader := &SegmentReader{
 		Direction: DirectionIn,
-		Log:       log.Level(zerolog.TraceLevel),
+		Log:       log.Level(zerolog.DebugLevel),
 		Stream:    globalSegmentStream,
+		Mu:        globalSegmentReaderMutex,
 	}
 	outReader := &SegmentReader{
 		Direction: DirectionOut,
-		Log:       log.Level(zerolog.TraceLevel),
+		Log:       log.Level(zerolog.DebugLevel),
 		Stream:    globalSegmentStream,
+		Mu:        globalSegmentReaderMutex,
 	}
+	go func() {
+		for {
+			segment, ok := <-globalSegmentStream
+			if !ok {
+				log.Info().Msg("segment stream closed")
+				return
+			}
+			if x, ok := segment.Message.(*MessageBlock); ok {
+				block, err := x.Block()
+				if err != nil {
+					log.Fatal().Msgf("%+v", errors.WithStack(err))
+				}
+				log.Info().Msgf("decoded block: %d", block.Data.Header.Body.Number)
+			}
+		}
+	}()
 	var err error
 	for _, item := range items {
 		h := loadHexFile(dir + item.Name())
 		if strings.Contains(item.Name(), "i") {
+			fmt.Println(item.Name())
 			_, err = inReader.Read(h)
 			if err != nil {
 				log.Fatal().Msgf("%+v", errors.WithStack(err))
@@ -219,55 +230,9 @@ func decodeBlockMessages() {
 				log.Fatal().Msgf("%+v", errors.WithStack(err))
 			}
 
-			_ = os.WriteFile(fmt.Sprintf("block%d", i), []byte(fmt.Sprintf("%x", b.Block)), os.ModePerm)
+			_ = os.WriteFile(fmt.Sprintf("block%d", i), []byte(fmt.Sprintf("%x", b.BlockData)), os.ModePerm)
 		}
 	}
-}
-
-func handleSegment(segment *Segment) (target any, err error) {
-	var temp any
-
-	subprotocol := -1
-	if err := cbor.Unmarshal(segment.Payload, &temp); err == nil {
-		subprotocol = int(temp.([]any)[0].(uint64))
-	}
-
-	if subprotocol == -1 {
-		log.Info().Msg("SKIPPING non-valid subprotocol segment, probably needs concatenating?")
-		// log.Info().Msgf("%x", segment.Payload)
-		return
-	}
-
-	target, _ = ProtocolToMessage(segment.Protocol, Subprotocol(subprotocol))
-
-	// TODO: handle the above error and remove the debug code below
-
-	if target != nil {
-		fmt.Printf("%s %s %T (%d)\n", segment.Direction.String(), segment.Protocol, target, subprotocol)
-		err = cbor.Unmarshal(segment.Payload, target)
-		if err != nil {
-			fmt.Println(temp)
-			fmt.Printf("%x\n", segment.Payload)
-			fmt.Printf("protocol:    %s\n", segment.Protocol)
-			fmt.Printf("subprotocol: %d\n", subprotocol)
-			err = errors.WithStack(err)
-			return
-		}
-		if j, err := json.MarshalIndent(target, "", "  "); err == nil {
-			fmt.Println(string(j))
-		}
-	} else {
-		fmt.Println(temp)
-		fmt.Printf("%x\n", segment.Payload)
-		fmt.Printf("protocol:    %s\n", segment.Protocol)
-		fmt.Printf("subprotocol: %d\n", subprotocol)
-
-		err = errors.Errorf(
-			"no target message to deserialize for payload %x\n",
-			segment.Payload)
-	}
-
-	return
 }
 
 func decodeBlock(data []byte) {

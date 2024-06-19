@@ -1,5 +1,7 @@
 package main
 
+import "github.com/fxamacker/cbor/v2"
+
 type MessageRequestRange struct {
 	WithSubprotocol
 	From Point `json:"from"`
@@ -20,8 +22,15 @@ type MessageNoBlocks struct {
 
 type MessageBlock struct {
 	WithSubprotocol
-	Block Block
+	BlockData []byte
 }
+
+func (b *MessageBlock) Block() (block *Block, err error) {
+	block = &Block{}
+	err = cbor.Unmarshal(b.BlockData, block)
+	return
+}
+
 type MessageBatchDone struct {
 	WithSubprotocol
 }

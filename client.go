@@ -16,6 +16,7 @@ func NewClient(hostport string) *Client {
 	return &Client{
 		hostport:          hostport,
 		keepAliveInterval: DefaultKeepAliveInterval,
+		keepAliveChan:     make(chan *MessageKeepAliveResponse, 1),
 		inSegmentReader:   NewSegmentReader(DirectionIn),
 	}
 }
@@ -24,7 +25,9 @@ type Client struct {
 	conn              net.Conn
 	hostport          string
 	keepAliveInterval time.Duration
+	keepAliveChan     chan *MessageKeepAliveResponse
 	inSegmentReader   *SegmentReader
+	batching          bool
 }
 
 func (c *Client) Dial() (err error) {
@@ -34,7 +37,7 @@ func (c *Client) Dial() (err error) {
 }
 
 func (c *Client) Handshake() (err error) {
-	message := MessageProposeVersions{
+	messageProposeVersions := MessageProposeVersions{
 		WithSubprotocol: WithSubprotocol{
 			Subprotocol: SubprotocolHandshakeProposedVersion,
 		},
@@ -48,26 +51,20 @@ func (c *Client) Handshake() (err error) {
 		},
 	}
 
-	err = c.SendMessage(message)
+	err = c.SendMessage(messageProposeVersions)
 	if err != nil {
 		return
 	}
 
 	select {
 	case segment := <-c.inSegmentReader.Stream:
-		ireply, err2 := handleSegment(segment)
-		if err2 != nil {
-			err = err2
-			return
-		}
-
-		if reply, ok := ireply.(*MessageAcceptVersion); ok {
+		if reply, ok := segment.Message.(*MessageAcceptVersion); ok {
 			log.Info().Msgf("handshake ok, node accepted version %d", reply.Version)
 			return
 		} else {
 			err = errors.Errorf(
 				"handshake failed, received message %T, expected %T",
-				ireply,
+				segment.Message,
 				&MessageAcceptVersion{},
 			)
 		}
@@ -76,7 +73,46 @@ func (c *Client) Handshake() (err error) {
 		err = errors.New("timeout while waiting for node version response")
 	}
 
+	for {
+		segment, ok := <-c.inSegmentReader.Stream
+		if !ok {
+			break
+		}
+
+		err = c.handleMessage(segment.Message)
+		if err != nil {
+			log.Fatal().Msgf("%+v", err)
+		}
+	}
+
 	return
+}
+
+func (c *Client) handleMessage(message any) (err error) {
+	switch m := message.(type) {
+	case *MessageKeepAliveResponse:
+		c.keepAliveChan <- m
+	case *MessageBlock:
+		return c.handleMessageBlock(m)
+	case *MessageRollForward:
+		return c.handleMessageRollForward(m)
+	case *MessageRollBackward:
+		return c.handleMessageRollBackward(m)
+	case *MessageStartBatch:
+		return c.handleMessageStartBatch(m)
+	case *MessageBatchDone:
+		return c.handleMessageBatchDone(m)
+	case *MessageAwaitReply:
+		return c.handleMessageAwaitReply(m)
+	case *MessageIntersectFound:
+		return c.handleMessageIntersectFound(m)
+	case *MessageFindIntersect:
+		return c.handleMessageFindIntersect(m)
+	case *MessageRequestNext:
+		return c.handleMessageRequestNext(m)
+	}
+
+	return errors.Errorf("no client handler for message type %T", message)
 }
 
 func (c *Client) KeepAlive() {
@@ -123,10 +159,52 @@ func (c *Client) SendMessage(message any) (err error) {
 func (c *Client) FetchBlock(point Point) (block Block, err error) {
 	panic("not implemented")
 
-	err = c.SendMessage(&MessageStartBatch{})
+	err = c.SendMessage(&MessageRequestRange{})
 	if err != nil {
 		return
 	}
 
 	return
+}
+
+func (c *Client) handleMessageStartBatch(m *MessageStartBatch) (err error) {
+	c.batching = true
+	return
+}
+
+func (c *Client) handleMessageBatchDone(m *MessageBatchDone) (err error) {
+	c.batching = false
+	return
+}
+
+func (c *Client) handleMessageAwaitReply(m *MessageAwaitReply) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageIntersectFound(m *MessageIntersectFound) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageRollBackward(m *MessageRollBackward) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageRollForward(m *MessageRollForward) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageAcceptVersion(m *MessageAcceptVersion) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageFindIntersect(m *MessageFindIntersect) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageRequestNext(m *MessageRequestNext) (err error) {
+	panic("not implemented")
+}
+
+func (c *Client) handleMessageBlock(m *MessageBlock) (err error) {
+	panic("not implemented")
 }

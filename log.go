@@ -10,19 +10,15 @@ import (
 	"github.com/rs/zerolog/pkgerrors"
 )
 
-var log = zerolog.New(nil).Output(zerolog.ConsoleWriter{
+var globalLog = zerolog.New(nil).Output(zerolog.ConsoleWriter{
 	Out:        os.Stderr,
 	TimeFormat: time.TimeOnly,
 }).With().Timestamp().Logger()
 
-func Logger() zerolog.Logger {
-	return log
-}
-
 func init() {
 	zerolog.TimeFieldFormat = time.TimeOnly
 	zerolog.ErrorStackMarshaler = MarshalStack
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	zerolog.SetGlobalLevel(zerolog.TraceLevel)
 }
 
 func MarshalStack(err error) interface{} {

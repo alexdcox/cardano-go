@@ -3,22 +3,28 @@ package main
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"math"
 	"net"
+	"reflect"
 	"time"
 
-	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 )
 
 const DefaultKeepAliveInterval = time.Second * 30
 
-func NewClient(hostport string) *Client {
-	return &Client{
+func NewClient(hostport string, networkMagic NetworkMagic) *Client {
+	client := &Client{
 		hostport:          hostport,
 		keepAliveInterval: DefaultKeepAliveInterval,
 		keepAliveChan:     make(chan *MessageKeepAliveResponse, 1),
 		inSegmentReader:   NewSegmentReader(DirectionIn),
+		networkMagic:      networkMagic,
+		log:               globalLog,
 	}
+
+	return client
 }
 
 type Client struct {
@@ -28,27 +34,46 @@ type Client struct {
 	keepAliveChan     chan *MessageKeepAliveResponse
 	inSegmentReader   *SegmentReader
 	batching          bool
+	networkMagic      NetworkMagic
+	log               zerolog.Logger
 }
 
 func (c *Client) Dial() (err error) {
+	c.log.Info().Msgf("dialing node %s", c.hostport)
 	c.conn, err = net.Dial("tcp", c.hostport)
-	err = errors.WithStack(err)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	c.log.Info().Msg("connected to node")
+
+	c.inSegmentReader = NewSegmentReader(DirectionIn)
+	go c.beginReadStream()
+
 	return
 }
 
+func (c *Client) beginReadStream() {
+	for {
+		buf := make([]byte, int(math.Pow(2, 20)))
+		n, err := c.conn.Read(buf)
+		if err != nil {
+			c.log.Error().Msgf("%+v", errors.WithStack(err))
+			time.Sleep(time.Second * 3)
+			continue
+		}
+		_, err = c.inSegmentReader.Read(buf[:n])
+		if err != nil {
+			c.log.Error().Msgf("%+v", errors.WithStack(err))
+			time.Sleep(time.Second * 3)
+			continue
+		}
+	}
+}
+
 func (c *Client) Handshake() (err error) {
-	messageProposeVersions := MessageProposeVersions{
-		WithSubprotocol: WithSubprotocol{
-			Subprotocol: SubprotocolHandshakeProposedVersion,
-		},
-		VersionMap: VersionMap{
-			V13: VersionField2{
-				Network:                    NetworkMagicMainnet,
-				InitiatorOnlyDiffusionMode: true,
-				PeerSharing:                0,
-				Query:                      false,
-			},
-		},
+	c.log.Info().Msg("begin handshake")
+	messageProposeVersions := &MessageProposeVersions{
+		VersionMap: defaultVersionMap(c.networkMagic),
 	}
 
 	err = c.SendMessage(messageProposeVersions)
@@ -56,33 +81,18 @@ func (c *Client) Handshake() (err error) {
 		return
 	}
 
-	select {
-	case segment := <-c.inSegmentReader.Stream:
-		if reply, ok := segment.Message.(*MessageAcceptVersion); ok {
-			log.Info().Msgf("handshake ok, node accepted version %d", reply.Version)
-			return
-		} else {
-			err = errors.Errorf(
-				"handshake failed, received message %T, expected %T",
-				segment.Message,
-				&MessageAcceptVersion{},
-			)
-		}
+	c.log.Info().Msg("wait for version accept message")
 
-	case <-time.After(time.Second * 3):
-		err = errors.New("timeout while waiting for node version response")
-	}
-
-	for {
-		segment, ok := <-c.inSegmentReader.Stream
-		if !ok {
-			break
-		}
-
-		err = c.handleMessage(segment.Message)
-		if err != nil {
-			log.Fatal().Msgf("%+v", err)
-		}
+	acceptVersionMsg, err := c.ReceiveNextWithTimeout(time.Second * 10)
+	if reply, ok := acceptVersionMsg.(*MessageAcceptVersion); ok {
+		c.log.Info().Msgf("handshake ok, node accepted version %d", reply.Version)
+		return
+	} else {
+		err = errors.Errorf(
+			"handshake failed, received message %T, expected %T",
+			acceptVersionMsg,
+			&MessageAcceptVersion{},
+		)
 	}
 
 	return
@@ -127,28 +137,38 @@ func (c *Client) KeepAlive() {
 			Cookie: cookie,
 		})
 		if err != nil {
-			log.Error().Err(err)
+			c.log.Error().Err(err)
 		}
 	}
 }
 
 func (c *Client) SendMessage(message any) (err error) {
-	messageCbor, err := cbor.Marshal(message)
+	segment := &Segment{
+		Timestamp: 0,
+		Direction: DirectionOut,
+	}
+
+	err = segment.SetMessage(message)
 	if err != nil {
-		err = errors.WithStack(err)
 		return
 	}
 
-	n, err := c.conn.Write(messageCbor)
+	writeBytes, err := segment.MarshalDataItem()
 	if err != nil {
-		err = errors.WithStack(err)
-		return
+		return errors.WithStack(err)
 	}
 
-	if n < len(messageCbor) {
+	c.log.Debug().Msgf("sending message %T\n%x", message, writeBytes)
+
+	n, err := c.conn.Write(writeBytes)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	if n < len(writeBytes) {
 		err = errors.Errorf(
 			"write error: expected to write %d bytes, managed %d",
-			len(messageCbor),
+			len(writeBytes),
 			n,
 		)
 	}
@@ -156,14 +176,97 @@ func (c *Client) SendMessage(message any) (err error) {
 	return
 }
 
-func (c *Client) FetchBlock(point Point) (block Block, err error) {
-	panic("not implemented")
+func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 
-	err = c.SendMessage(&MessageRequestRange{})
+	// err = c.SendMessage(&MessageFindIntersect{
+	// 	Points: []Point{WellKnownMainnetPoint},
+	// })
+	// if err != nil {
+	// 	return
+	// }
+	//
+	// intersectFoundResponse, err := c.ReceiveNext()
+	// if err != nil {
+	// 	return
+	// }
+	//
+	// if reflect.TypeOf(intersectFoundResponse) != reflect.TypeOf(&intersectFoundResponse{}) {
+	// 	err = errors.Errorf("expected intersect found message, got %T", intersectFoundResponse)
+	// 	return
+	// }
+
+	err = c.SendMessage(&MessageRequestRange{
+		From: point,
+		To:   point,
+	})
 	if err != nil {
 		return
 	}
 
+	for {
+		var next any
+
+		next, err = c.ReceiveNext()
+		if err != nil {
+			return
+		}
+
+		if reflect.TypeOf(next) == reflect.TypeOf(&MessageStartBatch{}) {
+			continue
+		}
+
+		if reflect.TypeOf(next) != reflect.TypeOf(&MessageBlock{}) {
+			err = errors.Errorf("expected block message, got %T", next)
+			return
+		}
+
+		msg := next.(*MessageBlock)
+		return msg.Block()
+	}
+}
+
+func (c *Client) ReceiveNext() (message any, err error) {
+	segment, ok := <-c.inSegmentReader.Stream
+	if !ok {
+		err = errors.New("segment stream closed")
+		return
+	}
+	for {
+		message, err = c.messageFromSegment(segment)
+		if err != nil {
+			return
+		}
+		if reflect.TypeOf(message) == reflect.TypeOf(&MessageKeepAlive{}) {
+			err = errors.New("unexpected keep alive")
+			return
+		}
+		if reflect.TypeOf(message) == reflect.TypeOf(&MessageKeepAliveResponse{}) {
+			c.log.Info().Msg("got keep alive response, forwarding to alternative channel and reading next message")
+			c.keepAliveChan <- message.(*MessageKeepAliveResponse)
+			continue
+		}
+		return
+	}
+}
+
+func (c *Client) ReceiveNextWithTimeout(timeout time.Duration) (message any, err error) {
+	select {
+	case segment := <-c.inSegmentReader.Stream:
+		return c.messageFromSegment(segment)
+
+	case <-time.After(timeout):
+		err = errors.New("timeout while waiting for node version response")
+		return
+	}
+}
+
+func (c *Client) messageFromSegment(segment *Segment) (message any, err error) {
+	if segment.Message == nil {
+		err = errors.New("invalid segment, no message")
+		return
+	}
+
+	message = segment.Message
 	return
 }
 

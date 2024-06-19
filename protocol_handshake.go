@@ -127,7 +127,7 @@ func encodeVersionMap() {
 
 	b, err := cbor.Marshal(h)
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
 	fmt.Printf("%x\n", b)

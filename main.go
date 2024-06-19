@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
-	"github.com/rs/zerolog"
 )
 
 //go:embed _data/rollforwardheader
@@ -28,11 +26,9 @@ func main() {
 
 	decodedHex, err := hex.DecodeString(hexString)
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 	_ = decodedHex
-
-	zerolog.SetGlobalLevel(zerolog.TraceLevel)
 
 	switch target {
 	case "block":
@@ -49,12 +45,12 @@ func main() {
 		testClient()
 	}
 
-	h, err := hex.DecodeString("8105")
+	h, err := hex.DecodeString("201ef1cc800300028102")
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	fmt.Println(bytes.Equal(h, []byte{0x81, 0x05}))
+	fmt.Println(h[10:])
 
 	// decode()
 	// decodeAuxData()
@@ -72,26 +68,26 @@ func main() {
 }
 
 func testClient() {
-	client := NewClient(nodeHostPort)
+	client := NewClient(nodeHostPort, NetworkMagicMainnet)
 
 	err := client.Dial()
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
 	err = client.Handshake()
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
 	go client.KeepAlive()
 
 	block, err := client.FetchBlock(WellKnownMainnetPoint)
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	log.Info().Msgf(
+	globalLog.Info().Msgf(
 		"block number: %v, transactions: %d",
 		block.Data.Header.Body.Number,
 		len(block.Data.TransactionBodies),
@@ -100,56 +96,19 @@ func testClient() {
 
 var globalSegmentStream chan *Segment
 
-// func decodeProxyFiles() {
-// 	globalSegmentStream = make(chan *Segment)
-//
-// 	dir := "_data/proxy-20240610-182733/"
-// 	items, _ := ioutil.ReadDir(dir)
-// 	inReader := &SegmentReader{
-// 		Direction: "IN",
-// 		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
-// 		Stream:    globalSegmentStream,
-// 	}
-// 	outReader := &SegmentReader{
-// 		Direction: "OUT",
-// 		Log:       log.Level(zerolog.DebugLevel).With().Logger(),
-// 		Stream:    globalSegmentStream,
-// 	}
-// 	var err error
-//
-// 	for _, item := range items {
-// 		h := loadHexFile(dir + item.Name())
-// 		if strings.Contains(item.Name(), "i") {
-// 			_, err = inReader.Read(h)
-// 			if err != nil {
-// 				log.Fatal().Msgf("%+v", errors.WithStack(err))
-// 			}
-// 		} else {
-// 			_, err = outReader.Read(h)
-// 			if err != nil {
-// 				log.Fatal().Msgf("%+v", errors.WithStack(err))
-// 			}
-// 		}
-// 	}
-//
-// 	fmt.Printf("read %d files\n", len(items))
-// 	fmt.Println("done")
-// 	// fmt.Printf("%x\n", x)
-// }
-
 func testDeserializeSerialize() {
 	dir := "_data/proxy-20240610-182733/"
 	items, _ := os.ReadDir(dir)
 	globalSegmentStream = make(chan *Segment)
 	inReader := &SegmentReader{
 		Direction: DirectionIn,
-		Log:       log.Level(zerolog.DebugLevel),
+		Log:       globalLog,
 		Stream:    globalSegmentStream,
 		Mu:        globalSegmentReaderMutex,
 	}
 	outReader := &SegmentReader{
 		Direction: DirectionOut,
-		Log:       log.Level(zerolog.DebugLevel),
+		Log:       globalLog,
 		Stream:    globalSegmentStream,
 		Mu:        globalSegmentReaderMutex,
 	}
@@ -157,15 +116,16 @@ func testDeserializeSerialize() {
 		for {
 			segment, ok := <-globalSegmentStream
 			if !ok {
-				log.Info().Msg("segment stream closed")
+				globalLog.Info().Msg("segment stream closed")
 				return
 			}
+
 			if x, ok := segment.Message.(*MessageBlock); ok {
 				block, err := x.Block()
 				if err != nil {
-					log.Fatal().Msgf("%+v", errors.WithStack(err))
+					globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 				}
-				log.Info().Msgf("decoded block: %d", block.Data.Header.Body.Number)
+				globalLog.Info().Msgf("decoded block: %d", block.Data.Header.Body.Number)
 			}
 		}
 	}()
@@ -173,15 +133,14 @@ func testDeserializeSerialize() {
 	for _, item := range items {
 		h := loadHexFile(dir + item.Name())
 		if strings.Contains(item.Name(), "i") {
-			fmt.Println(item.Name())
 			_, err = inReader.Read(h)
 			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
+				globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 			}
 		} else {
 			_, err = outReader.Read(h)
 			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
+				globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 			}
 		}
 	}
@@ -190,7 +149,7 @@ func testDeserializeSerialize() {
 func loadFile(filePath string) (data []byte) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 	return
 }
@@ -198,7 +157,7 @@ func loadFile(filePath string) (data []byte) {
 func loadHexFile(filePath string) (data []byte) {
 	data, err := hex.DecodeString(string(loadFile(filePath)))
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 	return
 }
@@ -221,13 +180,13 @@ func decodeBlockMessages() {
 
 			h, err := hex.DecodeString(line)
 			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
+				globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 			}
 
 			b := &MessageBlock{}
 			err = cbor.Unmarshal(h, b)
 			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
+				globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 			}
 
 			_ = os.WriteFile(fmt.Sprintf("block%d", i), []byte(fmt.Sprintf("%x", b.BlockData)), os.ModePerm)
@@ -244,7 +203,7 @@ func decodeBlock(data []byte) {
 			fmt.Println(x)
 		}
 
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
 	t := a
@@ -258,7 +217,7 @@ func decodeBlock(data []byte) {
 
 		fmt.Printf("%T %+v\n", t, t)
 
-		log.Fatal().Msgf("%+v\n", err2)
+		globalLog.Fatal().Msgf("%+v\n", err2)
 	}
 
 	fmt.Println("ok!")

@@ -35,85 +35,56 @@ type Segment struct {
 	Message       any
 }
 
-// func (s *Segment) UnmarshalDataItem(data []byte) (length int, err error) {
-// 	if len(data) < 8 {
-// 		err = errors.Errorf("short segment data len=%d", len(data))
-// 		return
-// 	}
-//
-// 	timestampBytes := data[0:4]
-// 	s.Timestamp = binary.BigEndian.Uint32(timestampBytes)
-//
-// 	protocolBytes := data[4:6]
-// 	s.Protocol = Protocol(binary.BigEndian.Uint16(protocolBytes))
-// 	if protocolBytes[0] == 0x80 {
-// 		s.Protocol -= 32768
-// 	}
-//
-// 	if s.Protocol > 10 {
-// 		err = errors.Errorf(
-// 			"protocol %d is obviously wrong, read from hex: %x",
-// 			s.Protocol,
-// 			protocolBytes)
-// 		return
-// 	}
-//
-// 	byteLenBytes := data[6:8]
-// 	s.PayloadLength = binary.BigEndian.Uint16(byteLenBytes)
-// 	// if byteLenBytes[0] == 0x80 {
-// 	// 	s.PayloadLength -= 32768
-// 	// }
-//
-// 	// if len(data)-8 != int(byteLenInt) {
-// 	// 	log.Fatalf("%+v", errors.Errorf(
-// 	// 		"expected %d bytes remaining, actually %d",
-// 	// 		int(byteLenInt),
-// 	// 		len(data[n:])-8))
-// 	// }
-//
-// 	i := 8 + int(s.PayloadLength)
-// 	if i > len(data) {
-// 		i = len(data)
-// 	}
-// 	s.Payload = data[8:i]
-// 	// first, _, err := cbor.DiagnoseFirst(payload)
-// 	// if err != nil {
-// 	// 	log.Fatalf("%+v", errors.WithStack(err))
-// 	// }
-// 	// fmt.Println(first)
-// 	// fmt.Println("------------------------------")
-//
-// 	// if i < len(data) {
-// 	// 	log.Warn().Msgf(
-// 	// 		"segment parsed with %d additional bytes remaining",
-// 	// 		len(data)-len(s.Payload))
-// 	// }
-//
-// 	length = i
-//
-// 	return
-// }
+func (s *Segment) MarshalDataItem() (out []byte, err error) {
+	messageCbor, err := cbor.Marshal(s.Message)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	timestamp := uint32(1)
+	timestampBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(timestampBytes, timestamp)
+
+	protocolBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(protocolBytes, uint16(s.Protocol))
+
+	s.PayloadLength = uint16(len(messageCbor))
+	payloadLengthBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(payloadLengthBytes, s.PayloadLength)
+
+	buf := &bytes.Buffer{}
+	buf.Write(timestampBytes)
+	buf.Write(protocolBytes)
+	buf.Write(payloadLengthBytes)
+	buf.Write(messageCbor)
+
+	out = buf.Bytes()
+
+	return
+}
 
 func (s *Segment) Complete() bool {
 	return int(s.PayloadLength) == len(s.Payload)
 }
 
-// func (s *Segment) Append(data []byte) (read int) {
-// 	remaining := int(s.PayloadLength) - len(s.Payload)
-// 	read = int(math.Min(float64(len(data)), float64(remaining)))
-// 	s.Payload = append(s.Payload, data[:read]...)
-//
-// 	// fmt.Printf("segment appended with %d bytes remaining\n", remaining)
-//
-// 	return
-// }
+func (s *Segment) SetMessage(message any) (err error) {
+	protocol, ok := MessageProtocolMap[reflect.TypeOf(message)]
+	if !ok {
+		return errors.Errorf("no protocol for message %T", message)
+	}
+
+	s.Message = message
+	s.Protocol = protocol
+
+	return
+}
 
 func NewSegmentReader(direction Direction) *SegmentReader {
 	return &SegmentReader{
 		Direction: direction,
-		Log:       zerolog.Nop(),
+		Log:       globalLog,
 		Stream:    make(chan *Segment),
-		Mu:        &sync.Mutex{},
 	}
 }
 
@@ -200,6 +171,14 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 
 					r.Log.Info().Msgf("parsed block: %v", block.Data.Header.Body.Number)
 					r.Batching = false
+					r.Stream <- &Segment{
+						Timestamp:     0,
+						Protocol:      ProtocolBlockFetch,
+						PayloadLength: 0,
+						Payload:       nil,
+						Direction:     r.Direction,
+						Message:       m,
+					}
 				}
 			} else {
 				message, err2 := parseSegmentMessage(r.segment)
@@ -258,7 +237,7 @@ func parseSegmentMessage(segment *Segment) (target any, err error) {
 	// TODO: remove the debug code below
 
 	if target != nil {
-		fmt.Printf("%s %s %T (%d)\n", segment.Direction.String(), segment.Protocol, target, subprotocol)
+		// fmt.Printf("%s %s %T (%d)\n", segment.Direction.String(), segment.Protocol, target, subprotocol)
 		err = cbor.Unmarshal(segment.Payload, target)
 		if err != nil {
 			fmt.Println(temp)

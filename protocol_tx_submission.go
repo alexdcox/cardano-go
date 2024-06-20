@@ -2,7 +2,8 @@ package main
 
 type MessageSubmitTx struct {
 	WithSubprotocol
-	Tx TransactionBody
+	BodyType Era
+	TxBytes  []byte
 }
 
 type MessageAcceptTx struct {

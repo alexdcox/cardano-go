@@ -22,6 +22,7 @@ func NewClient(hostport string, networkMagic NetworkMagic) *Client {
 		inSegmentReader:   NewSegmentReader(DirectionIn),
 		networkMagic:      networkMagic,
 		log:               globalLog,
+		tipLoader:         FileSystemTipLoader("latest-tip.json"),
 	}
 
 	return client
@@ -36,9 +37,129 @@ type Client struct {
 	batching          bool
 	networkMagic      NetworkMagic
 	log               zerolog.Logger
+	tipLoader         TipStore
+	tip               Tip
+	shutdown          bool
 }
 
-func (c *Client) Dial() (err error) {
+func (c *Client) Start() (err error) {
+	c.log.Info().Msg("starting client")
+
+	err = c.dial()
+	if err != nil {
+		return
+	}
+
+	err = c.handshake()
+	if err != nil {
+		return
+	}
+
+	err = c.loadTip()
+	if err != nil {
+		return
+	}
+
+	go c.keepAlive()
+	go c.followChain()
+
+	return
+}
+
+func (c *Client) followChain() {
+	point := DefaultMainnetTip.Point
+
+	err := c.sendMessage(&MessageFindIntersect{Points: []Point{point}})
+	if err != nil {
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	in, err := c.receiveNext()
+	if err != nil {
+		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	intersect, ok := in.(*MessageIntersectFound)
+	if !ok {
+		globalLog.Fatal().Msgf("expecting intersect found got %T", in)
+	}
+
+	c.log.Info().Msgf("got intersect %+v", intersect)
+
+	for {
+		err = c.sendMessage(&MessageRequestNext{})
+		if err != nil {
+			globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+		}
+
+		in, err = c.receiveNext()
+		if err != nil {
+			if c.shutdown {
+				return
+			}
+			globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+		}
+
+		c.log.Info().Msgf("got %T %+v", in, in)
+
+		if rollForward, ok := in.(*MessageRollForward); ok {
+			if Era(rollForward.Data.Number) < EraBabbage {
+				c.log.Warn().Msgf("skipping 'number???': %d", rollForward.Data.Number)
+				continue
+			}
+
+			c.tip = rollForward.Tip
+
+			header, err2 := rollForward.BlockHeader()
+			if err2 != nil {
+				c.log.Fatal().Msgf("unable to parse block header %+v\n%x", err2, []byte(rollForward.Data.BlockHeader))
+			} else {
+				c.log.Info().Msgf(
+					"chain sync for era: %d, block: %d, slot: %d, hash: %s",
+					rollForward.Data.Number,
+					header.Body.Number,
+					header.Body.Slot,
+					header.Body.Hash,
+				)
+			}
+		}
+	}
+
+}
+
+var DefaultMainnetTip = Tip{
+	Point: Point{
+		Slot: 127350361,
+		Hash: HexString("cb1a4a043fa0e00bc02945358216357cf314fcf69fca3ca0320614a0691dcd62").Bytes(),
+	},
+	Block: 10471759,
+}
+
+func (c *Client) loadTip() (err error) {
+	c.tip, err = c.tipLoader.LoadTip()
+	if err == nil {
+		return
+	}
+	c.log.Warn().Msg("previous tip could not be loaded, using default tip")
+	c.tip = DefaultMainnetTip
+	return nil
+}
+
+func (c *Client) Stop() (err error) {
+	if c.shutdown {
+		return
+	}
+	c.shutdown = true
+
+	err = errors.WithStack(c.conn.Close())
+	if err != nil {
+		return
+	}
+
+	return errors.WithStack(c.tipLoader.SaveTip(c.tip))
+}
+
+func (c *Client) dial() (err error) {
 	c.log.Info().Msgf("dialing node %s", c.hostport)
 	c.conn, err = net.Dial("tcp", c.hostport)
 	if err != nil {
@@ -53,14 +174,26 @@ func (c *Client) Dial() (err error) {
 }
 
 func (c *Client) beginReadStream() {
+	defer close(c.inSegmentReader.Stream)
 	for {
+		if c.shutdown {
+			return
+		}
+
 		buf := make([]byte, int(math.Pow(2, 20)))
 		n, err := c.conn.Read(buf)
 		if err != nil {
+			if c.shutdown {
+				c.log.Info().Msg("throwing away last read, client shutting down")
+				return
+			}
 			c.log.Error().Msgf("%+v", errors.WithStack(err))
 			time.Sleep(time.Second * 3)
 			continue
 		}
+
+		c.log.Debug().Msgf("read: %x", buf[:n])
+
 		_, err = c.inSegmentReader.Read(buf[:n])
 		if err != nil {
 			c.log.Error().Msgf("%+v", errors.WithStack(err))
@@ -70,20 +203,20 @@ func (c *Client) beginReadStream() {
 	}
 }
 
-func (c *Client) Handshake() (err error) {
+func (c *Client) handshake() (err error) {
 	c.log.Info().Msg("begin handshake")
 	messageProposeVersions := &MessageProposeVersions{
 		VersionMap: defaultVersionMap(c.networkMagic),
 	}
 
-	err = c.SendMessage(messageProposeVersions)
+	err = c.sendMessage(messageProposeVersions)
 	if err != nil {
 		return
 	}
 
 	c.log.Info().Msg("wait for version accept message")
 
-	acceptVersionMsg, err := c.ReceiveNextWithTimeout(time.Second * 10)
+	acceptVersionMsg, err := c.receiveNextWithTimeout(time.Second * 10)
 	if reply, ok := acceptVersionMsg.(*MessageAcceptVersion); ok {
 		c.log.Info().Msgf("handshake ok, node accepted version %d", reply.Version)
 		return
@@ -98,7 +231,7 @@ func (c *Client) Handshake() (err error) {
 	return
 }
 
-func (c *Client) handleMessage(message any) (err error) {
+func (c *Client) handleMessage(message Message) (err error) {
 	switch m := message.(type) {
 	case *MessageKeepAliveResponse:
 		c.keepAliveChan <- m
@@ -125,15 +258,18 @@ func (c *Client) handleMessage(message any) (err error) {
 	return errors.Errorf("no client handler for message type %T", message)
 }
 
-func (c *Client) KeepAlive() {
+func (c *Client) keepAlive() {
 	for {
 		time.Sleep(time.Second * 30)
+		if c.shutdown {
+			return
+		}
 
 		cookieBytes := make([]byte, 4)
 		_, _ = rand.Read(cookieBytes)
 		cookie := binary.BigEndian.Uint16(cookieBytes)
 
-		err := c.SendMessage(&MessageKeepAlive{
+		err := c.sendMessage(&MessageKeepAlive{
 			Cookie: cookie,
 		})
 		if err != nil {
@@ -142,7 +278,21 @@ func (c *Client) KeepAlive() {
 	}
 }
 
-func (c *Client) SendMessage(message any) (err error) {
+func (c *Client) sendMessage(message Message) (err error) {
+	if c.shutdown {
+		err = errors.Errorf("dropping message %T, client shutting down", message)
+		return
+	}
+
+	c.log.Info().Msgf("sending message %T", message)
+
+	if subprotocol, ok := MessageSubprotocolMap[reflect.TypeOf(message)]; ok {
+		c.log.Info().Msgf("message: %T, subprotocol: %v", message, subprotocol)
+		message.SetSubprotocol(subprotocol)
+	} else {
+		return errors.Errorf("no subprotocol defined for message type %T", message)
+	}
+
 	segment := &Segment{
 		Timestamp: 0,
 		Direction: DirectionOut,
@@ -158,7 +308,7 @@ func (c *Client) SendMessage(message any) (err error) {
 		return errors.WithStack(err)
 	}
 
-	c.log.Debug().Msgf("sending message %T\n%x", message, writeBytes)
+	c.log.Debug().Msgf("write: %x", writeBytes)
 
 	n, err := c.conn.Write(writeBytes)
 	if err != nil {
@@ -177,25 +327,7 @@ func (c *Client) SendMessage(message any) (err error) {
 }
 
 func (c *Client) FetchBlock(point Point) (block *Block, err error) {
-
-	// err = c.SendMessage(&MessageFindIntersect{
-	// 	Points: []Point{WellKnownMainnetPoint},
-	// })
-	// if err != nil {
-	// 	return
-	// }
-	//
-	// intersectFoundResponse, err := c.ReceiveNext()
-	// if err != nil {
-	// 	return
-	// }
-	//
-	// if reflect.TypeOf(intersectFoundResponse) != reflect.TypeOf(&intersectFoundResponse{}) {
-	// 	err = errors.Errorf("expected intersect found message, got %T", intersectFoundResponse)
-	// 	return
-	// }
-
-	err = c.SendMessage(&MessageRequestRange{
+	err = c.sendMessage(&MessageRequestRange{
 		From: point,
 		To:   point,
 	})
@@ -206,7 +338,7 @@ func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 	for {
 		var next any
 
-		next, err = c.ReceiveNext()
+		next, err = c.receiveNext()
 		if err != nil {
 			return
 		}
@@ -225,7 +357,28 @@ func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 	}
 }
 
-func (c *Client) ReceiveNext() (message any, err error) {
+func (c *Client) FetchLatestBlock() (block *Block, err error) {
+	err = c.sendMessage(&MessageFindIntersect{
+		Points: []Point{WellKnownMainnetPoint},
+	})
+	if err != nil {
+		return
+	}
+
+	next, err := c.receiveNext()
+	if err != nil {
+		return
+	}
+
+	if intersectFound, ok := next.(*MessageIntersectFound); ok {
+		return c.FetchBlock(intersectFound.Tip.Point)
+	} else {
+		err = errors.Errorf("expected intersect found message, got %T", next)
+		return
+	}
+}
+
+func (c *Client) receiveNext() (message Message, err error) {
 	segment, ok := <-c.inSegmentReader.Stream
 	if !ok {
 		err = errors.New("segment stream closed")
@@ -249,7 +402,7 @@ func (c *Client) ReceiveNext() (message any, err error) {
 	}
 }
 
-func (c *Client) ReceiveNextWithTimeout(timeout time.Duration) (message any, err error) {
+func (c *Client) receiveNextWithTimeout(timeout time.Duration) (message any, err error) {
 	select {
 	case segment := <-c.inSegmentReader.Stream:
 		return c.messageFromSegment(segment)
@@ -260,7 +413,7 @@ func (c *Client) ReceiveNextWithTimeout(timeout time.Duration) (message any, err
 	}
 }
 
-func (c *Client) messageFromSegment(segment *Segment) (message any, err error) {
+func (c *Client) messageFromSegment(segment *Segment) (message Message, err error) {
 	if segment.Message == nil {
 		err = errors.New("invalid segment, no message")
 		return

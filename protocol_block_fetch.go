@@ -1,6 +1,9 @@
 package main
 
-import "github.com/fxamacker/cbor/v2"
+import (
+	"github.com/fxamacker/cbor/v2"
+	"github.com/pkg/errors"
+)
 
 type MessageRequestRange struct {
 	WithSubprotocol
@@ -27,7 +30,7 @@ type MessageBlock struct {
 
 func (b *MessageBlock) Block() (block *Block, err error) {
 	block = &Block{}
-	err = cbor.Unmarshal(b.BlockData, block)
+	err = errors.WithStack(cbor.Unmarshal(b.BlockData, block))
 	return
 }
 

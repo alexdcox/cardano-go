@@ -25,16 +25,25 @@ type MessageRollForward struct {
 	Tip Tip `json:"tip"`
 }
 
-func (m MessageRollForward) MarshalJSON() (out []byte, err error) {
-	// TODO: What's the number all about? The era? I'm dropping it atm but perhaps shouldn't.
+func (m MessageRollForward) BlockHeader() (header *BlockHeader, err error) {
+	header = &BlockHeader{}
+	err = errors.WithStack(cbor.Unmarshal(m.Data.BlockHeader, header))
+	return
+}
 
-	blockHeader := &BlockHeader{}
-	err = cbor.Unmarshal(m.Data.BlockHeader, blockHeader)
+func (m MessageRollForward) MarshalJSON() (out []byte, err error) {
+	blockHeader, err := m.BlockHeader()
 	if err != nil {
-		err = errors.WithStack(err)
 		return
 	}
-	return json.Marshal(blockHeader)
+
+	out, err = json.Marshal(map[string]any{
+		"number": m.Data.Number, // TODO: What's the number all about?
+		"header": blockHeader,
+	})
+	err = errors.WithStack(err)
+
+	return
 }
 
 type MessageRollBackward struct {

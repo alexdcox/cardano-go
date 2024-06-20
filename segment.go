@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -32,7 +33,7 @@ type Segment struct {
 	PayloadLength uint16
 	Payload       []byte
 	Direction     Direction
-	Message       any
+	Message       Message
 }
 
 func (s *Segment) MarshalDataItem() (out []byte, err error) {
@@ -41,6 +42,7 @@ func (s *Segment) MarshalDataItem() (out []byte, err error) {
 		err = errors.WithStack(err)
 		return
 	}
+	s.Payload = messageCbor
 
 	timestamp := uint32(1)
 	timestampBytes := make([]byte, 4)
@@ -68,7 +70,7 @@ func (s *Segment) Complete() bool {
 	return int(s.PayloadLength) == len(s.Payload)
 }
 
-func (s *Segment) SetMessage(message any) (err error) {
+func (s *Segment) SetMessage(message Message) (err error) {
 	protocol, ok := MessageProtocolMap[reflect.TypeOf(message)]
 	if !ok {
 		return errors.Errorf("no protocol for message %T", message)
@@ -143,12 +145,21 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 		if r.segment.Complete() {
 			r.Log.Debug().Msg("segment complete")
 
+			if !r.Batching && r.segment.Protocol == ProtocolBlockFetch {
+				batchStart := []byte{0x81, 0x02}
+				if bytes.HasPrefix(r.segment.Payload, batchStart) {
+					r.Log.Info().Msg("start batch marker found")
+					r.Batching = true
+					r.Batch = []*Segment{}
+					r.segment.Payload = r.segment.Payload[2:]
+				}
+			}
+
 			if r.Batching {
 				r.Log.Debug().Msg("batching segment")
 				r.Batch = append(r.Batch, r.segment)
 				batchEnd := []byte{0x81, 0x05}
-				if bytes.Equal(r.segment.Payload[len(r.segment.Payload)-2:], batchEnd) {
-
+				if bytes.HasSuffix(r.segment.Payload, batchEnd) {
 					batchPayload := []byte{}
 					for _, b := range r.Batch {
 						batchPayload = append(batchPayload, b.Payload...)
@@ -158,18 +169,11 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 					r.Log.Debug().Msgf("batch complete\n%x", batchPayload)
 
 					m := &MessageBlock{}
-					err = cbor.Unmarshal(batchPayload, m)
+					err = errors.WithStack(cbor.Unmarshal(batchPayload, m))
 					if err != nil {
 						return
 					}
 
-					block, err2 := m.Block()
-					if err2 != nil {
-						err = err2
-						return
-					}
-
-					r.Log.Info().Msgf("parsed block: %v", block.Data.Header.Body.Number)
 					r.Batching = false
 					r.Stream <- &Segment{
 						Timestamp:     0,
@@ -180,46 +184,28 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 						Message:       m,
 					}
 				}
+				r.segment = nil
 			} else {
 				message, err2 := parseSegmentMessage(r.segment)
-
-				if !r.Batching && message == nil {
-					if r.segment.Protocol == ProtocolBlockFetch && r.Direction == DirectionIn {
-						batchStart := []byte{0x81, 0x02}
-						if bytes.Equal(r.segment.Payload[:2], batchStart) {
-							r.Log.Info().Msg("alternate block start marker found")
-							r.Log.Debug().Msg("start batch")
-							r.Batching = true
-							r.Batch = []*Segment{r.segment}
-							continue
-						}
-					}
-				}
-
 				if err2 != nil {
 					err = err2
 					return
 				}
 				r.segment.Message = message
+				r.Stream <- r.segment
+				r.segment = nil
 			}
-			if reflect.TypeOf(r.segment.Message) == reflect.TypeOf(&MessageStartBatch{}) {
-				r.Log.Debug().Msg("start batch")
-				r.Batching = true
-				r.Batch = []*Segment{}
-			}
-			r.Stream <- r.segment
-			r.segment = nil
 		}
 	}
 
 	return
 }
 
-func parseSegmentMessage(segment *Segment) (target any, err error) {
+func parseSegmentMessage(segment *Segment) (target Message, err error) {
 	var temp any
 
 	subprotocol := -1
-	if err := cbor.Unmarshal(segment.Payload, &temp); err == nil {
+	if err2 := cbor.Unmarshal(segment.Payload, &temp); err2 == nil {
 		subprotocol = int(temp.([]any)[0].(uint64))
 	}
 
@@ -237,19 +223,20 @@ func parseSegmentMessage(segment *Segment) (target any, err error) {
 	// TODO: remove the debug code below
 
 	if target != nil {
-		// fmt.Printf("%s %s %T (%d)\n", segment.Direction.String(), segment.Protocol, target, subprotocol)
-		err = cbor.Unmarshal(segment.Payload, target)
+		globalLog.Debug().Msgf("%s %s %T (%d)", segment.Direction.String(), segment.Protocol, target, subprotocol)
+		err = errors.WithStack(cbor.Unmarshal(segment.Payload, target))
 		if err != nil {
 			fmt.Println(temp)
 			fmt.Printf("%x\n", segment.Payload)
 			fmt.Printf("protocol:    %s\n", segment.Protocol)
 			fmt.Printf("subprotocol: %d\n", subprotocol)
-			err = errors.WithStack(err)
 			return
 		}
-		// if j, err := json.MarshalIndent(target, "", "  "); err == nil {
-		// 	fmt.Println(string(j))
-		// }
+		if j, err := json.MarshalIndent(target, "", "  "); err == nil {
+			globalLog.Debug().Msg(string(j))
+		} else {
+			globalLog.Debug().Msgf("failed to marshal segment to json %+v", err)
+		}
 	} else {
 		fmt.Println(temp)
 		fmt.Printf("%x\n", segment.Payload)

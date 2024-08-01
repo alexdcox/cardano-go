@@ -1,4 +1,4 @@
-package main
+package cardano
 
 type MessageKeepAlive struct {
 	WithSubprotocol

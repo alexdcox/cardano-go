@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"encoding/json"
@@ -30,6 +30,8 @@ func (f fileSystemJsonTipLoader) LoadTip() (tip Tip, err error) {
 		return
 	}
 
+	globalLog.Info().Msgf("read latest tip (block: %d) from file", tip.Block)
+
 	return
 }
 
@@ -46,7 +48,7 @@ func (f fileSystemJsonTipLoader) SaveTip(tip Tip) (err error) {
 		return
 	}
 
-	globalLog.Info().Msgf("wrote latest tip %s to file %s", tip, f.path)
+	globalLog.Info().Msgf("wrote latest tip (block: %d) to file %s", tip.Block, f.path)
 
 	return
 }

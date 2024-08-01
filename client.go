@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"crypto/rand"
@@ -14,18 +14,23 @@ import (
 
 const DefaultKeepAliveInterval = time.Second * 30
 
-func NewClient(hostport string, networkMagic NetworkMagic) *Client {
-	client := &Client{
+func NewClient(hostport string, network Network) (client *Client, err error) {
+	params, err := network.Params()
+	if err != nil {
+		return
+	}
+
+	client = &Client{
 		hostport:          hostport,
 		keepAliveInterval: DefaultKeepAliveInterval,
 		keepAliveChan:     make(chan *MessageKeepAliveResponse, 1),
 		inSegmentReader:   NewSegmentReader(DirectionIn),
-		networkMagic:      networkMagic,
-		log:               globalLog,
+		params:            params,
+		log:               Log(),
 		tipLoader:         FileSystemTipLoader("latest-tip.json"),
 	}
 
-	return client
+	return
 }
 
 type Client struct {
@@ -35,11 +40,15 @@ type Client struct {
 	keepAliveChan     chan *MessageKeepAliveResponse
 	inSegmentReader   *SegmentReader
 	batching          bool
-	networkMagic      NetworkMagic
-	log               zerolog.Logger
+	params            *NetworkParams
+	log               *zerolog.Logger
 	tipLoader         TipStore
 	tip               Tip
 	shutdown          bool
+}
+
+func (c *Client) GetTip() (tip Tip, err error) {
+	return c.tip, nil
 }
 
 func (c *Client) Start() (err error) {
@@ -55,7 +64,7 @@ func (c *Client) Start() (err error) {
 		return
 	}
 
-	err = c.loadTip()
+	err = c.loadPreviousTip()
 	if err != nil {
 		return
 	}
@@ -67,21 +76,43 @@ func (c *Client) Start() (err error) {
 }
 
 func (c *Client) followChain() {
-	point := DefaultMainnetTip.Point
-
-	err := c.sendMessage(&MessageFindIntersect{Points: []Point{point}})
+	err := c.sendMessage(&MessageFindIntersect{Points: []Point{{
+		Slot: 1,
+		Hash: make([]byte, 32),
+	}}})
 	if err != nil {
-		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+		c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+		return
 	}
 
 	in, err := c.receiveNext()
 	if err != nil {
-		globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+		c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+		return
+	}
+
+	notFound, ok := in.(*MessageIntersectNotFound)
+	if !ok {
+		c.log.Error().Msgf("follow chain failure: expecting intersect not found, got %T", in)
+		return
+	}
+
+	err = c.sendMessage(&MessageFindIntersect{Points: []Point{notFound.Tip.Point}})
+	if err != nil {
+		c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+		return
+	}
+
+	in, err = c.receiveNext()
+	if err != nil {
+		c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+		return
 	}
 
 	intersect, ok := in.(*MessageIntersectFound)
 	if !ok {
-		globalLog.Fatal().Msgf("expecting intersect found got %T", in)
+		c.log.Error().Msgf("follow chain failure: expecting intersect found, got %T", in)
+		return
 	}
 
 	c.log.Info().Msgf("got intersect %+v", intersect)
@@ -89,7 +120,8 @@ func (c *Client) followChain() {
 	for {
 		err = c.sendMessage(&MessageRequestNext{})
 		if err != nil {
-			globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+			return
 		}
 
 		in, err = c.receiveNext()
@@ -97,7 +129,8 @@ func (c *Client) followChain() {
 			if c.shutdown {
 				return
 			}
-			globalLog.Fatal().Msgf("%+v", errors.WithStack(err))
+			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+			return
 		}
 
 		c.log.Info().Msgf("got %T %+v", in, in)
@@ -112,7 +145,7 @@ func (c *Client) followChain() {
 
 			header, err2 := rollForward.BlockHeader()
 			if err2 != nil {
-				c.log.Fatal().Msgf("unable to parse block header %+v\n%x", err2, []byte(rollForward.Data.BlockHeader))
+				c.log.Error().Msgf("follow chain failure: unable to parse block header %+v\n%x", err2, []byte(rollForward.Data.BlockHeader))
 			} else {
 				c.log.Info().Msgf(
 					"chain sync for era: %d, block: %d, slot: %d, hash: %s",
@@ -135,7 +168,7 @@ var DefaultMainnetTip = Tip{
 	Block: 10471759,
 }
 
-func (c *Client) loadTip() (err error) {
+func (c *Client) loadPreviousTip() (err error) {
 	c.tip, err = c.tipLoader.LoadTip()
 	if err == nil {
 		return
@@ -150,6 +183,7 @@ func (c *Client) Stop() (err error) {
 		return
 	}
 	c.shutdown = true
+	c.log.Info().Msg("stopping client")
 
 	err = errors.WithStack(c.conn.Close())
 	if err != nil {
@@ -206,7 +240,7 @@ func (c *Client) beginReadStream() {
 func (c *Client) handshake() (err error) {
 	c.log.Info().Msg("begin handshake")
 	messageProposeVersions := &MessageProposeVersions{
-		VersionMap: defaultVersionMap(c.networkMagic),
+		VersionMap: defaultVersionMap(c.params.Magic),
 	}
 
 	err = c.sendMessage(messageProposeVersions)
@@ -326,6 +360,42 @@ func (c *Client) sendMessage(message Message) (err error) {
 	return
 }
 
+func (c *Client) FetchTip() (tip Tip, err error) {
+	err = c.sendMessage(&MessageFindIntersect{
+		Points: []Point{
+			{
+				Slot: 0,
+				Hash: make([]byte, 32),
+			},
+		},
+	})
+	if err != nil {
+		return
+	}
+
+	next, err := c.receiveNext()
+	if err != nil {
+		return
+	}
+
+	if intersectFound, ok := next.(*MessageIntersectNotFound); ok {
+		tip = intersectFound.Tip
+	} else {
+		err = errors.Errorf("expected intersect found message, got %T", next)
+	}
+
+	return
+}
+
+func (c *Client) FetchLatestBlock() (block *Block, err error) {
+	tip, err := c.FetchTip()
+	if err != nil {
+		return
+	}
+
+	return c.FetchBlock(tip.Point)
+}
+
 func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 	err = c.sendMessage(&MessageRequestRange{
 		From: point,
@@ -354,27 +424,6 @@ func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 
 		msg := next.(*MessageBlock)
 		return msg.Block()
-	}
-}
-
-func (c *Client) FetchLatestBlock() (block *Block, err error) {
-	err = c.sendMessage(&MessageFindIntersect{
-		Points: []Point{WellKnownMainnetPoint},
-	})
-	if err != nil {
-		return
-	}
-
-	next, err := c.receiveNext()
-	if err != nil {
-		return
-	}
-
-	if intersectFound, ok := next.(*MessageIntersectFound); ok {
-		return c.FetchBlock(intersectFound.Tip.Point)
-	} else {
-		err = errors.Errorf("expected intersect found message, got %T", next)
-		return
 	}
 }
 

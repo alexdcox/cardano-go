@@ -1,3 +1,5 @@
 cardano-go
-_data/
+rpc
+_*/
 latest-tip.json
+cardano.db

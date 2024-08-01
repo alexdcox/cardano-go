@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"github.com/fxamacker/cbor/v2"

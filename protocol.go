@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"encoding/hex"
@@ -202,6 +202,16 @@ func (b Base58Bytes) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"%s"`, b)), nil
 }
 
+type HexBytes []byte
+
+func (b HexBytes) String() string {
+	return hex.EncodeToString(b)
+}
+
+func (b HexBytes) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, b)), nil
+}
+
 type Message interface {
 	SetSubprotocol(Subprotocol)
 }
@@ -215,53 +225,10 @@ func (w *WithSubprotocol) SetSubprotocol(subprotocol Subprotocol) {
 	w.Subprotocol = subprotocol
 }
 
-type NetworkMagic uint64
-
-const (
-	NetworkMagicMainnet       NetworkMagic = 764824073
-	NetworkMagicLegacyTestnet NetworkMagic = 1097911063
-	NetworkMagicPreProd       NetworkMagic = 1
-	NetworkMagicPreview       NetworkMagic = 2
-	NetworkMagicSanchonet     NetworkMagic = 4
-)
-
-const (
-	RelayMainnet   = "relays-new.cardano-mainnet.iohk.io:3001"
-	RelayTestnet   = "relays-new.cardano-testnet.iohkdev.io:3001"
-	RelayPreProd   = "preprod-node.world.dev.cardano.org:30000"
-	RelayPreview   = "preview-node.world.dev.cardano.org:30002"
-	RelaySanchonet = "sanchonet-node.play.dev.cardano.org:3001"
-)
-
 type Point struct {
-	_    struct{}    `cbor:",toarray"`
-	Slot uint64      `cbor:",omitempty" json:"slot"`
-	Hash Base58Bytes `chor:",omitempty" json:"hash"`
-}
-
-var WellKnownMainnetPoint Point = Point{
-	Slot: 16588737,
-	Hash: HexString("4e9bbbb67e3ae262133d94c3da5bffce7b1127fc436e7433b87668dba34c354a").Bytes(),
-}
-
-var WellKnownTestnetPoint Point = Point{
-	Slot: 13694363,
-	Hash: HexString("b596f9739b647ab5af901c8fc6f75791e262b0aeba81994a1d622543459734f2").Bytes(),
-}
-
-var WellKnownPreprodPoint Point = Point{
-	Slot: 87480,
-	Hash: HexString("528c3e6a00c82dd5331b116103b6e427acf447891ce3ade6c4c7a61d2f0a2b1c").Bytes(),
-}
-
-var WellKnownPreviewPoint Point = Point{
-	Slot: 8000,
-	Hash: HexString("70da683c00985e23903da00656fae96644e1f31dce914aab4ed50e35e4c4842d").Bytes(),
-}
-
-var WellKnownSanchonetPoint Point = Point{
-	Slot: 20,
-	Hash: HexString("6a7d97aae2a65ca790fd14802808b7fce00a3362bd7b21c4ed4ccb4296783b98").Bytes(),
+	_    struct{} `cbor:",toarray"`
+	Slot uint64   `cbor:",omitempty" json:"slot"`
+	Hash HexBytes `chor:",omitempty" json:"hash"`
 }
 
 type Tip struct {
@@ -302,6 +269,10 @@ func (r *SubtypeOf[T]) UnmarshalCBOR(bytes []byte) (err error) {
 	}
 
 	return errors.WithStack(CBORUnmarshalError{Target: new(T), Bytes: bytes})
+}
+
+func (r *SubtypeOf[T]) MarshalCBOR() (bytes []byte, err error) {
+	return cbor.Marshal(r.Subtype)
 }
 
 type Optional[T any] struct {

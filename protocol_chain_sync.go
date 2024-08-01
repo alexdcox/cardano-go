@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"encoding/json"
@@ -18,9 +18,9 @@ type MessageAwaitReply struct {
 type MessageRollForward struct {
 	WithSubprotocol
 	Data struct {
-		_           struct{}    `cbor:",toarray"`
-		Number      uint64      `json:"number"`
-		BlockHeader Base58Bytes `json:"content"`
+		_           struct{} `cbor:",toarray"`
+		Number      uint64   `json:"number"`
+		BlockHeader HexBytes `json:"content"`
 	} `json:"data"`
 	Tip Tip `json:"tip"`
 }

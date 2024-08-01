@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"bytes"
@@ -85,7 +85,7 @@ func (s *Segment) SetMessage(message Message) (err error) {
 func NewSegmentReader(direction Direction) *SegmentReader {
 	return &SegmentReader{
 		Direction: direction,
-		Log:       globalLog,
+		Log:       &globalLog,
 		Stream:    make(chan *Segment),
 	}
 }
@@ -93,14 +93,12 @@ func NewSegmentReader(direction Direction) *SegmentReader {
 type SegmentReader struct {
 	segment   *Segment
 	Direction Direction
-	Log       zerolog.Logger
+	Log       *zerolog.Logger
 	Stream    chan *Segment
 	Batching  bool
 	Batch     []*Segment
 	Mu        *sync.Mutex
 }
-
-var globalSegmentReaderMutex = &sync.Mutex{}
 
 func (r *SegmentReader) Read(data []byte) (n int, err error) {
 	if r.Mu != nil {
@@ -144,6 +142,43 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 		r.segment.Payload = append(r.segment.Payload, data[i])
 		if r.segment.Complete() {
 			r.Log.Debug().Msg("segment complete")
+
+			if len(r.segment.Payload) == 904 {
+				fmt.Println("here?")
+			}
+
+			data2 := r.segment.Payload
+			for {
+				if len(data2) == 0 {
+					break
+				}
+
+				var message []any
+				remaining, err2 := StandardCborDecoder.UnmarshalFirst(data2, &message)
+				if err2 != nil {
+					log.Fatal().Msgf("%+v\n", err2)
+				}
+
+				if j, err := json.MarshalIndent(message, "", "  "); err == nil {
+					fmt.Println(string(j))
+				}
+
+				if len(message) < 1 {
+					panic("wtf?")
+				}
+
+				messageI, err2 := ProtocolToMessage(r.segment.Protocol, Subprotocol(message[0].(uint64)))
+				if err2 != nil {
+					log.Fatal().Msgf("%+v", errors.WithStack(err2))
+				}
+				fmt.Printf("MESSAGE: %T\n", messageI)
+
+				if len(data2) == len(remaining) {
+					break
+				}
+
+				data2 = remaining
+			}
 
 			if !r.Batching && r.segment.Protocol == ProtocolBlockFetch {
 				batchStart := []byte{0x81, 0x02}

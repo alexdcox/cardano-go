@@ -1,4 +1,4 @@
-package main
+package cardano
 
 import (
 	"fmt"
@@ -11,9 +11,15 @@ import (
 )
 
 var globalLog = zerolog.New(nil).Output(zerolog.ConsoleWriter{
-	Out:        os.Stderr,
+	Out:        os.Stdout,
 	TimeFormat: time.TimeOnly,
 }).With().Timestamp().Logger()
+
+var log = Log()
+
+func Log() *zerolog.Logger {
+	return &globalLog
+}
 
 func init() {
 	zerolog.TimeFieldFormat = time.TimeOnly

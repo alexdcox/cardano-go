@@ -33,6 +33,12 @@ type MessageAcceptVersion struct {
 
 type MessageRefuse struct {
 	WithSubprotocol
+	Details struct {
+		_       struct{} `cbor:",toarray"`
+		Code    uint16   `json:"something"`
+		Version uint16   `json:"version"`
+		Reason  string   `json:"reason"`
+	} `json:"details"`
 }
 
 type MessageQueryReply struct {

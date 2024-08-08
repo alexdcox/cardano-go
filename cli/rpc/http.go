@@ -18,12 +18,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db db2.Database) (server *HttpRpcServer, err error) {
-	client, err := NewClient(config.NodeHostPort, Network(config.Network))
-	if err != nil {
-		return
-	}
-
+func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db db2.Database, client *Client) (server *HttpRpcServer, err error) {
 	server = &HttpRpcServer{
 		config:      config,
 		client:      client,
@@ -114,20 +109,31 @@ func (s *HttpRpcServer) getUtxoForAddress(c echo.Context) error {
 		})
 	}
 
-	var mime = "text/plain"
-	if gjson.ParseBytes(output).IsObject() {
-		mime = "application/json"
+	jsn := gjson.ParseBytes(output)
+	if !jsn.IsObject() {
+		return c.Blob(http.StatusOK, "text/plain", output)
 	}
 
-	formattedOutput := []Utxo{}
+	formattedOutout := []any{}
+	jsn.ForEach(func(key, value gjson.Result) bool {
+		formattedOutout = append(formattedOutout, rpcclient.Utxo{
+			TxHash:  key.String(),
+			Address: value.Get("address").String(),
+			Value:   value.Get("value.lovelace").Uint(),
+		})
+		return true
+	})
 
-	return c.Blob(http.StatusOK, mime, output)
+	return c.JSON(http.StatusOK, formattedOutout)
 }
 
 func (s *HttpRpcServer) getLatestBlock(c echo.Context) error {
 	// TODO: This needs to use the http rpc client not create a new one
 
-	client, err := NewClient("localhost:3000", NetworkPrivateNet)
+	client, err := NewClient(&ClientOptions{
+		HostPort: "localhost:3000",
+		Network:  NetworkPrivateNet,
+	})
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, err)
 	}
@@ -165,7 +171,7 @@ func (s *HttpRpcServer) getBlock(c echo.Context) error {
 		return c.JSON(http.StatusOK, block)
 	}
 
-	if block, err2 := s.chunkReader.GetBlock(int64(blockNumber)); err2 == nil {
+	if block, err2 := s.chunkReader.GetBlock(uint64(blockNumber)); err2 == nil {
 		return returnBlock(block)
 	}
 
@@ -206,13 +212,45 @@ func (s *HttpRpcServer) getTip(c echo.Context) error {
 }
 
 func (s *HttpRpcServer) postBroadcast(c echo.Context) error {
-	req := rpcclient.BroadcastRawTxRequest{}
+	var req rpcclient.BroadcastRawTxIn
 	if err := s.unmarshalJson(c, &req); err != nil {
 		return err
 	}
 
-	panic("not implemented")
-	// TODO: convert to tx submit
+	txFile, _ := json.Marshal(map[string]any{
+		"type":        "Witnessed Tx BabbageEra",
+		"description": "Ledger Cddl Format",
+		"cborHex":     req.Tx,
+	})
+
+	output, err := runCommandWithVirtualFiles(
+		"/usr/local/bin/cardano-cli",
+		"transaction submit --cardano-mode --tx-file file://tx --out-file /dev/stdout",
+		[]string{
+			fmt.Sprintf("CARDANO_NODE_NETWORK_ID=%d", config.Cardano.ShelleyConfig.NetworkMagic),
+			"CARDANO_NODE_SOCKET_PATH=" + config.SocketPath,
+		},
+		[]VirtualFile{
+			{
+				Name:    "tx",
+				Content: txFile,
+			},
+		},
+	)
+
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]any{
+			"output": string(output),
+			"error":  fmt.Sprintf("%+v", err),
+		})
+	}
+
+	var mime = "text/plain"
+	if gjson.ParseBytes(output).IsObject() {
+		mime = "application/json"
+	}
+
+	return c.Blob(http.StatusOK, mime, output)
 }
 
 func (s *HttpRpcServer) unmarshalJson(c echo.Context, target any) (err error) {

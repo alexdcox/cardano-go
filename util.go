@@ -2,9 +2,14 @@ package cardano
 
 import (
 	"crypto/ed25519"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"filippo.io/edwards25519"
 	"github.com/fxamacker/cbor/v2"
@@ -77,22 +82,113 @@ func DirectoryExists(path string) bool {
 	return info.IsDir()
 }
 
-func IterateDirectory(dir string, cb func(path string, info os.FileInfo, data []byte, err error) error) error {
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+func IterateChunkDirectory(dir string, cb func(path string, data []byte, err error) error) error {
+	type fileInfo struct {
+		Number uint64
+		Path   string
+	}
+	var files []fileInfo
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if !info.IsDir() {
-			data, err2 := os.ReadFile(path)
-			if err2 != nil {
-				return errors.WithStack(err2)
-			}
-			return cb(path, info, data, err)
+			segments := strings.Split(info.Name(), "-")
+			number, _ := strconv.ParseUint(segments[0], 10, 64)
+			files = append(files, fileInfo{
+				Number: number,
+				Path:   path,
+			})
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Number < files[j].Number
+	})
+
+	for _, file := range files {
+		data, err2 := os.ReadFile(file.Path)
+		if err2 != nil {
+			return errors.WithStack(err2)
+		}
+		err = cb(file.Path, data, err)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 var StandardCborDecoder, _ = cbor.DecOptions{
-	UTF8: cbor.UTF8DecodeInvalid,
+	UTF8:             cbor.UTF8DecodeInvalid,
+	MaxArrayElements: math.MaxInt32,
+	MaxMapPairs:      math.MaxInt32,
 }.DecMode()
+
+type PeriodicCaller struct {
+	mu           sync.Mutex
+	lastCallTime time.Time
+	interval     time.Duration
+	action       func()
+	stopChan     chan struct{}
+	stopped      bool
+}
+
+func NewPeriodicCaller(interval time.Duration, action func()) *PeriodicCaller {
+	return &PeriodicCaller{
+		interval: interval,
+		action:   action,
+		stopChan: make(chan struct{}),
+	}
+}
+
+func (pc *PeriodicCaller) Postpone() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.stopped {
+		return
+	}
+
+	now := time.Now()
+	if now.Sub(pc.lastCallTime) >= pc.interval {
+		go pc.action() // Run the action in a goroutine
+	}
+	pc.lastCallTime = now
+}
+
+func (pc *PeriodicCaller) Start() {
+	go func() {
+		ticker := time.NewTicker(pc.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				pc.mu.Lock()
+				if !pc.stopped && time.Since(pc.lastCallTime) >= pc.interval {
+					go pc.action() // Run the action in a goroutine
+					pc.lastCallTime = time.Now()
+				}
+				pc.mu.Unlock()
+			case <-pc.stopChan:
+				return
+			}
+		}
+	}()
+}
+
+func (pc *PeriodicCaller) Stop() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if !pc.stopped {
+		pc.stopped = true
+		close(pc.stopChan)
+	}
+}

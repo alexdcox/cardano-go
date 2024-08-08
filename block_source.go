@@ -6,20 +6,20 @@ import (
 )
 
 type BlockSource interface {
-	GetBlock(number int64) (*Block, error)
+	GetBlock(number uint64) (*Block, error)
 	GetBlockChan() chan *Block
 }
 
 type BlockStream struct {
 	sources []BlockSource
-	blocks  map[int64]*Block
+	blocks  map[uint64]*Block
 	mu      sync.RWMutex
 	blockCh chan *Block
 }
 
 func NewBlockStream() *BlockStream {
 	bs := &BlockStream{
-		blocks:  make(map[int64]*Block),
+		blocks:  make(map[uint64]*Block),
 		blockCh: make(chan *Block),
 	}
 	go bs.aggregateBlocks()
@@ -57,7 +57,7 @@ func (s *BlockStream) AddSource(source BlockSource) {
 	}()
 }
 
-func (s *BlockStream) GetBlock(height int64) (*Block, error) {
+func (s *BlockStream) GetBlock(height uint64) (*Block, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

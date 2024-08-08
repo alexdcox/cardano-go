@@ -33,25 +33,69 @@ type Segment struct {
 	PayloadLength uint16
 	Payload       []byte
 	Direction     Direction
-	Message       Message
+	messages      []Message
+}
+
+func (s *Segment) Messages() (messages []Message, err error) {
+	data := s.Payload
+
+	for {
+		if len(data) == 0 {
+			break
+		}
+
+		var message []any
+		remaining, err2 := StandardCborDecoder.UnmarshalFirst(data, &message)
+		if err2 != nil {
+			err = errors.Wrap(err2, "failed to unmarshal first cbor")
+			return
+		}
+
+		messageI, err2 := ProtocolToMessage(s.Protocol, Subprotocol(message[0].(uint64)))
+		if err2 != nil {
+			err = err2
+			return
+		}
+
+		if _, is := messageI.(*MessageStartBatch); is {
+			fmt.Println("here")
+		}
+
+		_, err = StandardCborDecoder.UnmarshalFirst(data, messageI)
+		if err != nil {
+			err = errors.Wrap(err, "failed to unmarshal cbor to struct")
+			return
+		}
+
+		messages = append(messages, messageI)
+
+		if len(data) == len(remaining) {
+			break
+		}
+
+		data = remaining
+	}
+
+	return
 }
 
 func (s *Segment) MarshalDataItem() (out []byte, err error) {
-	messageCbor, err := cbor.Marshal(s.Message)
-	if err != nil {
-		err = errors.WithStack(err)
-		return
+	for _, message := range s.messages {
+		messageCbor, err2 := cbor.Marshal(message)
+		if err2 != nil {
+			err = errors.WithStack(err2)
+			return
+		}
+		s.Payload = append(s.Payload, messageCbor...)
 	}
-	s.Payload = messageCbor
 
-	timestamp := uint32(1)
 	timestampBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(timestampBytes, timestamp)
+	binary.BigEndian.PutUint32(timestampBytes, s.Timestamp)
 
 	protocolBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(protocolBytes, uint16(s.Protocol))
 
-	s.PayloadLength = uint16(len(messageCbor))
+	s.PayloadLength = uint16(len(s.Payload))
 	payloadLengthBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(payloadLengthBytes, s.PayloadLength)
 
@@ -59,7 +103,7 @@ func (s *Segment) MarshalDataItem() (out []byte, err error) {
 	buf.Write(timestampBytes)
 	buf.Write(protocolBytes)
 	buf.Write(payloadLengthBytes)
-	buf.Write(messageCbor)
+	buf.Write(s.Payload)
 
 	out = buf.Bytes()
 
@@ -70,14 +114,18 @@ func (s *Segment) Complete() bool {
 	return int(s.PayloadLength) == len(s.Payload)
 }
 
-func (s *Segment) SetMessage(message Message) (err error) {
+func (s *Segment) AddMessage(message Message) (err error) {
 	protocol, ok := MessageProtocolMap[reflect.TypeOf(message)]
 	if !ok {
 		return errors.Errorf("no protocol for message %T", message)
 	}
 
-	s.Message = message
+	if len(s.messages) > 0 && protocol != s.Protocol {
+		return errors.Errorf("cannot add messages with different protocols in the same segment")
+	}
+
 	s.Protocol = protocol
+	s.messages = append(s.messages, message)
 
 	return
 }
@@ -106,8 +154,47 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 		defer r.Mu.Unlock()
 	}
 
-	r.Log.Debug().Msgf("%s %d bytes\n%x", r.Direction, len(data), data)
+	r.Log.Debug().Msgf("%s %d bytes\n", r.Direction, len(data), data)
+
+	if r.Batching {
+		fmt.Printf("%x\n", data)
+	} else {
+		fmt.Printf("%x | %x\n", data[:8], data[8:])
+	}
+
 	defer r.Log.Debug().Msg("-----------------------------------------------------------------------------------------------")
+
+	if r.Batching {
+		r.Log.Debug().Msg("batching segment")
+		r.Batch = append(r.Batch, r.segment)
+		batchEnd := []byte{0x81, 0x05}
+		if bytes.HasSuffix(data, batchEnd) {
+			batchPayload := []byte{}
+			for _, b := range r.Batch {
+				batchPayload = append(batchPayload, b.Payload...)
+			}
+			batchPayload = batchPayload[:len(batchPayload)-2]
+
+			r.Log.Debug().Msgf("batch complete\n%x", batchPayload)
+
+			m := &MessageBlock{}
+			err = errors.WithStack(cbor.Unmarshal(batchPayload, m))
+			if err != nil {
+				return
+			}
+
+			r.Batching = false
+			r.Stream <- &Segment{
+				Timestamp:     0,
+				Protocol:      ProtocolBlockFetch,
+				PayloadLength: 0,
+				Payload:       nil,
+				Direction:     r.Direction,
+				messages:      []Message{m},
+			}
+		}
+		r.segment = nil
+	}
 
 	for i := 0; i < len(data); i++ {
 		if r.segment == nil {
@@ -156,7 +243,7 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 				var message []any
 				remaining, err2 := StandardCborDecoder.UnmarshalFirst(data2, &message)
 				if err2 != nil {
-					log.Fatal().Msgf("%+v\n", err2)
+					log.Fatal().Msgf("%+v", errors.WithStack(err2))
 				}
 
 				if j, err := json.MarshalIndent(message, "", "  "); err == nil {
@@ -190,46 +277,8 @@ func (r *SegmentReader) Read(data []byte) (n int, err error) {
 				}
 			}
 
-			if r.Batching {
-				r.Log.Debug().Msg("batching segment")
-				r.Batch = append(r.Batch, r.segment)
-				batchEnd := []byte{0x81, 0x05}
-				if bytes.HasSuffix(r.segment.Payload, batchEnd) {
-					batchPayload := []byte{}
-					for _, b := range r.Batch {
-						batchPayload = append(batchPayload, b.Payload...)
-					}
-					batchPayload = batchPayload[:len(batchPayload)-2]
-
-					r.Log.Debug().Msgf("batch complete\n%x", batchPayload)
-
-					m := &MessageBlock{}
-					err = errors.WithStack(cbor.Unmarshal(batchPayload, m))
-					if err != nil {
-						return
-					}
-
-					r.Batching = false
-					r.Stream <- &Segment{
-						Timestamp:     0,
-						Protocol:      ProtocolBlockFetch,
-						PayloadLength: 0,
-						Payload:       nil,
-						Direction:     r.Direction,
-						Message:       m,
-					}
-				}
-				r.segment = nil
-			} else {
-				message, err2 := parseSegmentMessage(r.segment)
-				if err2 != nil {
-					err = err2
-					return
-				}
-				r.segment.Message = message
-				r.Stream <- r.segment
-				r.segment = nil
-			}
+			r.Stream <- r.segment
+			r.segment = nil
 		}
 	}
 

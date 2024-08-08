@@ -1,10 +1,12 @@
 package cardano
 
 import (
+	"math"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,7 +22,7 @@ func NewChunkReader(dir string) (reader *ChunkReader, err error) {
 	reader = &ChunkReader{
 		dir:           dir,
 		immutableDir:  path.Join(dir, "./immutable/"),
-		numberPathMap: make(map[int64]*string),
+		numberPathMap: make(map[uint64]*string),
 		cache:         NewChunkCache(time.Second * 30),
 	}
 
@@ -28,18 +30,18 @@ func NewChunkReader(dir string) (reader *ChunkReader, err error) {
 }
 
 type ChunkReaderStatus struct {
-	FirstBlock       int64         `json:"firstBlock"`
-	LastBlock        int64         `json:"lastBlock"`
+	FirstBlock       uint64        `json:"firstBlock"`
+	LastBlock        uint64        `json:"lastBlock"`
 	TimeToStart      time.Duration `json:"timeToStart,string"`
 	Started          time.Time     `json:"started"`
-	FirstChunkNumber int64         `json:"firstChunkNumber"`
-	LastChunkNumber  int64         `json:"lastChunkNumber"`
+	FirstChunkNumber uint64        `json:"firstChunkNumber"`
+	LastChunkNumber  uint64        `json:"lastChunkNumber"`
 	LastChunkTime    time.Time     `json:"lastChunkTime"`
 }
 
 type Chunk struct {
-	FirstBlock      int64
-	LastBlock       int64
+	FirstBlock      uint64
+	LastBlock       uint64
 	BlockContainers []*ChunkedBlock
 	ChunkPath       string
 }
@@ -50,7 +52,7 @@ const FirstConwayChunk = 3348
 type ChunkReader struct {
 	dir           string
 	immutableDir  string
-	numberPathMap map[int64]*string // block number -> chunk file path
+	numberPathMap map[uint64]*string // block number -> chunk file path
 	Status        ChunkReaderStatus
 	cache         *ChunkCache
 }
@@ -92,7 +94,7 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 	var chunks []*Chunk
 	for i, chunkFile := range initialChunkFiles {
 		number, _ := r.chunkFileNumber(chunkFile)
-		if number < FirstConwayChunk || number <= int64(skipUntilNumber) {
+		if number < FirstConwayChunk || number <= skipUntilNumber {
 			continue
 		}
 		firstBlockOnly := true
@@ -148,7 +150,7 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 	return
 }
 
-func (r *ChunkReader) WatchChunkFiles() (err error) {
+func (r *ChunkReader) WatchChunkFiles(cb func(chunk, first, last uint64)) (err error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
@@ -172,10 +174,10 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 						log.Fatal().Msgf("%+v", errors.WithStack(err2))
 					}
 					// fmt.Println(event.Name)
-					for x := chunk.FirstBlock; x <= chunk.LastBlock; x++ {
-						log.Info().Msgf("watch %d -> %s", x, chunk.ChunkPath)
-						r.numberPathMap[int64(x)] = &chunk.ChunkPath
-					}
+					// for x := chunk.FirstBlock; x <= chunk.LastBlock; x++ {
+					// 	log.Info().Msgf("watch %d -> %s", x, chunk.ChunkPath)
+					// 	r.numberPathMap[x] = &chunk.ChunkPath
+					// }
 
 					number, err2 := r.chunkFileNumber(event.Name)
 					if err2 != nil {
@@ -189,6 +191,8 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 						chunk.LastBlock,
 						chunk.LastBlock-chunk.FirstBlock,
 					)
+
+					cb(number, chunk.FirstBlock, chunk.LastBlock)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -209,7 +213,57 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 	return
 }
 
-func (r *ChunkReader) GetChunkedBlock(number int64) (block *ChunkedBlock, err error) {
+type ChunkRange struct {
+	Min   uint64
+	Max   uint64
+	Chunk uint64
+}
+
+func (r *ChunkReader) ProcessBlockRanges() ([]ChunkRange, time.Duration) {
+	startTime := time.Now()
+
+	// Create a map to store min and max for each chunk path
+	chunkRanges := make(map[string]ChunkRange)
+
+	// Iterate through the numberPathMap
+	for blockNum, pathPtr := range r.numberPathMap {
+		if pathPtr == nil {
+			continue // Skip if path is nil
+		}
+		path := *pathPtr
+
+		// If this path is not in chunkRanges, initialize it
+		if _, exists := chunkRanges[path]; !exists {
+			chunkRanges[path] = ChunkRange{
+				Min:   math.MaxUint64, // Initialize Min to maximum possible value
+				Max:   0,              // Initialize Max to minimum possible value
+				Chunk: blockNum,
+			}
+		}
+
+		// Update the range for this path
+		current := chunkRanges[path]
+		current.Min = uint64(math.Min(float64(current.Min), float64(blockNum)))
+		current.Max = uint64(math.Max(float64(current.Max), float64(blockNum)))
+		chunkRanges[path] = current
+	}
+
+	// Convert map to slice
+	result := make([]ChunkRange, 0, len(chunkRanges))
+	for _, r := range chunkRanges {
+		result = append(result, r)
+	}
+
+	// Sort the result slice by Min block number
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Min < result[j].Min
+	})
+
+	elapsedTime := time.Since(startTime)
+	return result, elapsedTime
+}
+
+func (r *ChunkReader) GetChunkedBlock(number uint64) (block *ChunkedBlock, err error) {
 	findBlockInChunk := func(chunk *Chunk) (*ChunkedBlock, error) {
 		for _, b := range chunk.BlockContainers {
 			if b.block.Data.Header.Body.Number == number {
@@ -235,7 +289,7 @@ func (r *ChunkReader) GetChunkedBlock(number int64) (block *ChunkedBlock, err er
 	return nil, errors.WithStack(ErrBlockNotFound)
 }
 
-func (r *ChunkReader) GetBlock(number int64) (block *Block, err error) {
+func (r *ChunkReader) GetBlock(number uint64) (block *Block, err error) {
 	chunkedBlock, err := r.GetChunkedBlock(number)
 	if err != nil {
 		return
@@ -243,9 +297,9 @@ func (r *ChunkReader) GetBlock(number int64) (block *Block, err error) {
 	return chunkedBlock.block, nil
 }
 
-func (r *ChunkReader) chunkFileNumber(path string) (number int64, err error) {
+func (r *ChunkReader) chunkFileNumber(path string) (number uint64, err error) {
 	numberStr := filepath.Base(path)[:len(filepath.Base(path))-6] // Remove ".chunk"
-	number, err = strconv.ParseInt(numberStr, 10, 64)
+	number, err = strconv.ParseUint(numberStr, 10, 64)
 	if err != nil {
 		err = errors.WithStack(err)
 	}
@@ -373,7 +427,7 @@ func (r *ChunkReader) WaitForReady() {
 }
 
 type ChunkCache struct {
-	data     map[int64]*chunkCacheEntry
+	data     map[uint64]*chunkCacheEntry
 	duration time.Duration
 	mu       sync.Mutex
 }
@@ -385,12 +439,12 @@ type chunkCacheEntry struct {
 
 func NewChunkCache(duration time.Duration) *ChunkCache {
 	return &ChunkCache{
-		data:     make(map[int64]*chunkCacheEntry),
+		data:     make(map[uint64]*chunkCacheEntry),
 		duration: duration,
 	}
 }
 
-func (c *ChunkCache) Set(number int64, value *Chunk) {
+func (c *ChunkCache) Set(number uint64, value *Chunk) {
 	log.Info().Msgf("loading chunk %s into cache", path.Base(value.ChunkPath))
 
 	c.mu.Lock()
@@ -420,7 +474,7 @@ func (c *ChunkCache) Set(number int64, value *Chunk) {
 	}
 }
 
-func (c *ChunkCache) Get(number int64) (*Chunk, bool) {
+func (c *ChunkCache) Get(number uint64) (*Chunk, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

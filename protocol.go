@@ -214,6 +214,7 @@ func (b HexBytes) MarshalJSON() ([]byte, error) {
 
 type Message interface {
 	SetSubprotocol(Subprotocol)
+	GetSubprotocol() Subprotocol
 }
 
 type WithSubprotocol struct {
@@ -225,6 +226,10 @@ func (w *WithSubprotocol) SetSubprotocol(subprotocol Subprotocol) {
 	w.Subprotocol = subprotocol
 }
 
+func (w *WithSubprotocol) GetSubprotocol() (subprotocol Subprotocol) {
+	return w.Subprotocol
+}
+
 type Point struct {
 	_    struct{} `cbor:",toarray"`
 	Slot uint64   `cbor:",omitempty" json:"slot"`
@@ -234,7 +239,7 @@ type Point struct {
 type Tip struct {
 	_     struct{} `cbor:",toarray"`
 	Point Point    `json:"point"`
-	Block int64    `json:"block"`
+	Block uint64   `json:"block"`
 }
 
 func (t Tip) String() string {

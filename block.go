@@ -124,18 +124,18 @@ type BlockHeader struct {
 	_    struct{} `cbor:",toarray"`
 	Body struct {
 		_               struct{} `cbor:",toarray"`
-		Number          int64    `json:"number,omitempty"`
-		Slot            int64    `json:"slot,omitempty"`
+		Number          uint64   `json:"number,omitempty"`
+		Slot            uint64   `json:"slot,omitempty"`
 		PrevHash        HexBytes `json:"prevHash,omitempty"`
 		IssuerVkey      HexBytes `json:"issuerVkey,omitempty"`
 		VrfKey          HexBytes `json:"vrfKey,omitempty"`
 		VrfResult       VrfCert  `json:"vrfResult,omitempty"`
-		Size            int64    `json:"size,omitempty"`
+		Size            uint64   `json:"size,omitempty"`
 		Hash            HexBytes `json:"hash,omitempty"`
 		OperationalCert struct {
 			_         struct{} `cbor:",toarray"`
 			HotVkey   HexBytes `json:"hotVkey,omitempty"`
-			Sequence  int64    `json:"sequence,omitempty"`
+			Sequence  uint64   `json:"sequence,omitempty"`
 			KesPeriod int64    `json:"kesPeriod,omitempty"`
 			Sigma     HexBytes `json:"sigma,omitempty"`
 		} `json:"operationalCert"`
@@ -373,7 +373,8 @@ func (p *Point) UnmarshalCBOR(bytes []byte) (err error) {
 
 	if b, ok := a.([]any); ok {
 		if len(b) == 0 {
-			return errors.New("empty")
+			*p = Point{}
+			return
 		}
 		if len(b) == 2 {
 			*p = Point{

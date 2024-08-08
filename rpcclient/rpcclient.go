@@ -120,4 +120,6 @@ type Utxo struct {
 }
 
 func (c *RpcClient) QueryUtxosForAddress(in *QueryUtxosForAddressIn) (out *QueryUtxosForAddressOut, err error) {
+	err = errors.WithStack(c.get(fmt.Sprintf("/utxo/%s", in.Address), out))
+	return
 }

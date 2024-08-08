@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -101,16 +102,25 @@ func main() {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	db, err := db2.NewSqlLiteDatabase()
+	db, err := db2.NewSqlLiteDatabase("cardano.db")
 	if err != nil {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	if err = initialise(chunkReader, db); err != nil {
+	client, err := NewClient(&ClientOptions{
+		HostPort: config.NodeHostPort,
+		Network:  Network(config.Network),
+		TipStore: db,
+	})
+	if err != nil {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	httpServer, err := NewHttpRpcServer(config, chunkReader, db)
+	if err = initialise(chunkReader, db, client); err != nil {
+		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	httpServer, err := NewHttpRpcServer(config, chunkReader, db, client)
 	if err != nil {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
@@ -136,23 +146,72 @@ func main() {
 	log.Info().Msg("graceful shutdown complete")
 }
 
-func initialise(chunkReader *ChunkReader, db db2.Database) (err error) {
-
-	firstSavedChunk, lastSavedChunk, err := db.GetChunkRange()
+func initialise(chunkReader *ChunkReader, db db2.Database, client *Client) (err error) {
+	_, lastSavedChunk, err := db.GetChunkSpan()
 	if err != nil {
 		return
 	}
 
-	err = chunkReader.LoadChunkFiles(lastSavedChunk, func())
+	chunkReader.WaitForReady()
+
+	err = chunkReader.LoadChunkFiles(lastSavedChunk)
 	if err != nil {
 		return
 	}
+
+	// Write chunk filesystem indexes to database
+
+	result, duration := chunkReader.ProcessBlockRanges()
+	fmt.Printf("Processing took %v\n", duration)
+
+	for _, r := range result {
+		err = db.SetChunkRange(r.Chunk, r.Min, r.Max)
+	}
+
+	// Watch chunk filesystem for updates and update database accordingly
 
 	go func() {
-		err = chunkReader.WatchChunkFiles()
+		err = chunkReader.WatchChunkFiles(func(chunk, first, last uint64) {
+			err = db.SetChunkRange(chunk, first, last)
+			if err != nil {
+				log.Error().Msgf("%+v", err)
+			}
+		})
 		if err != nil {
 			log.Error().Msgf("%+v", err)
 		}
 	}()
 
+	err = client.Start()
+
+	// Write node-to-node block updates to database
+
+	client.OnBlock(func(block *Block) {
+		err = db.AddBlockPoint(block.Data.Header.Body.Number, Point{
+			Slot: block.Data.Header.Body.Slot,
+			Hash: block.Data.Header.Body.Hash,
+		})
+		if err != nil {
+			log.Fatal().Msgf("CRITICAL ERROR: unable to write block point index, %+v", err)
+		}
+		var hashes []string
+		for i, tx := range block.Data.TransactionBodies {
+			hash, err2 := tx.Hash()
+			if err2 != nil {
+				log.Fatal().Msgf(
+					"CRITICAL ERROR: unable to hash tx %d from block %d: %+v",
+					i,
+					block.Data.Header.Body.Number,
+					err2,
+				)
+			}
+			hashes = append(hashes, hash.String())
+		}
+		err = db.AddTxsForBlock(hashes, block.Data.Header.Body.Number)
+		if err != nil {
+			log.Fatal().Msgf("CRITICAL ERROR: unable to update txhash to block index", err)
+		}
+	})
+
+	return
 }

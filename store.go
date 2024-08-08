@@ -3,13 +3,16 @@ package cardano
 import (
 	"encoding/json"
 	"os"
+	"sync"
 
 	"github.com/pkg/errors"
 )
 
+// TODO: use sqlite, no longer needed
+
 type TipStore interface {
-	LoadTip() (Tip, error)
-	SaveTip(Tip) error
+	GetTip() (Tip, error)
+	SetTip(Tip) error
 }
 
 type fileSystemJsonTipLoader struct {
@@ -55,4 +58,38 @@ func (f fileSystemJsonTipLoader) SaveTip(tip Tip) (err error) {
 
 var FileSystemTipLoader = func(path string) fileSystemJsonTipLoader {
 	return fileSystemJsonTipLoader{path}
+}
+
+type InMemoryTipStore struct {
+	mu         sync.RWMutex
+	currentTip *Tip
+}
+
+func NewInMemoryTipStore() *InMemoryTipStore {
+	return &InMemoryTipStore{}
+}
+
+func (s *InMemoryTipStore) GetTip() (Tip, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.currentTip == nil {
+		return Tip{
+			Point: Point{
+				Slot: 0,
+				Hash: make(HexBytes, 32),
+			},
+			Block: 0,
+		}, nil
+	}
+
+	return *s.currentTip, nil
+}
+
+func (s *InMemoryTipStore) SetTip(tip Tip) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.currentTip = &tip
+	return nil
 }

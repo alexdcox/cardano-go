@@ -2,18 +2,26 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
 	"sync"
 
+	"github.com/alexdcox/cardano-go"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pkg/errors"
 )
 
 type Database interface {
-	AddBlockRange(chunk, start, end uint64)
-	GetBlockRange(number uint64) (start, end uint64, chunk uint64, err error)
-	AddTxBlockMap(txhash string, blockNumber uint64)
+	SetChunkRange(chunk, start, end uint64) (err error)
+	GetChunkRange(number uint64) (start, end uint64, chunk uint64, err error)
+	GetChunkSpan() (first, last uint64, err error)
+
+	AddTxsForBlock(txhashes []string, blockNumber uint64) (err error)
 	GetBlockForTx(txhash string) (blockNumber uint64, err error)
-	GetChunkRange() (start, end uint64, err error)
+
+	SetTip(tip cardano.Tip) error
+	GetTip() (cardano.Tip, error)
+
+	AddBlockPoint(number uint64, point cardano.Point) (err error)
+	GetBlockPoint(number uint64) (point cardano.Point, err error)
 }
 
 type SqlLiteDatabase struct {
@@ -21,105 +29,155 @@ type SqlLiteDatabase struct {
 	mu sync.Mutex
 }
 
-func NewSqlLiteDatabase() (db *SqlLiteDatabase, err error) {
-	sqldb, err := sql.Open("sqlite3", "cardano.db")
+var _ Database = &SqlLiteDatabase{}
+
+func NewSqlLiteDatabase(path string) (db *SqlLiteDatabase, err error) {
+	sqldb, err := sql.Open("sqlite3", path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		err = errors.Wrap(err, "failed to open database")
+		return
 	}
 
-	if err := sqldb.Ping(); err != nil {
-		sqldb.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	if err = sqldb.Ping(); err != nil {
+		_ = sqldb.Close()
+		err = errors.Wrap(err, "failed to ping database")
+		return
 	}
 
 	db = &SqlLiteDatabase{db: sqldb}
-	if err := db.initTables(); err != nil {
-		sqldb.Close()
-		return nil, fmt.Errorf("failed to initialize tables: %w", err)
+	if err = db.initTables(); err != nil {
+		_ = sqldb.Close()
+		err = errors.Wrap(err, "failed to init tables")
+		return
 	}
 
-	return db, nil
+	return
 }
 
-func (s *SqlLiteDatabase) initTables() error {
+func (s *SqlLiteDatabase) initTables() (err error) {
 	queries := []string{
-		`CREATE TABLE IF NOT EXISTS block_ranges (
+		`CREATE TABLE IF NOT EXISTS chunks (
 			chunk INTEGER PRIMARY KEY,
 			start INTEGER,
 			end INTEGER
 		)`,
-		`CREATE TABLE IF NOT EXISTS tx_block_map (
+		`CREATE TABLE IF NOT EXISTS txs (
 			txhash TEXT PRIMARY KEY,
 			block_number INTEGER
 		)`,
+		`CREATE TABLE IF NOT EXISTS tip (
+			slot INTEGER PRIMARY KEY,
+			hash TEXT,
+			number INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS points (
+			number INTEGER PRIMARY KEY,
+			slot INTEGER,
+			hash TEXT
+		)`,
 	}
 
-	for _, query := range queries {
-		_, err := s.db.Exec(query)
+	for i, query := range queries {
+		_, err = s.db.Exec(query)
 		if err != nil {
-			return fmt.Errorf("failed to execute query %s: %w", query, err)
+			err = errors.Wrapf(err, "failed to execute query: %d", i)
+			return
 		}
 	}
 
-	return nil
+	return
 }
 
-func (s *SqlLiteDatabase) AddBlockRange(chunk, start, end uint64) {
+func (s *SqlLiteDatabase) SetChunkRange(chunk, start, end uint64) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec("INSERT OR REPLACE INTO block_ranges (chunk, start, end) VALUES (?, ?, ?)",
+	if end <= start {
+		err = errors.Errorf("invalid chunk range %d to %d", start, end)
+		return
+	}
+
+	var count int
+	err = s.db.QueryRow(`
+		SELECT COUNT(*) FROM chunks 
+		WHERE
+			(
+				(:start BETWEEN start AND end) OR
+				(:end BETWEEN start AND end)
+			)
+	    AND chunk IS NOT :chunk`,
+		sql.Named("chunk", chunk),
+		sql.Named("start", start),
+		sql.Named("end", end),
+	).Scan(&count)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	if count > 0 {
+		return errors.Errorf("new range (%d, %d) overlaps with existing ranges", start, end)
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO chunks (chunk, start, end) VALUES (?, ?, ?)
+		ON CONFLICT DO UPDATE SET chunk=excluded.chunk, start=excluded.start, end=excluded.end`,
 		chunk, start, end)
-	if err != nil {
-		// Log the error or handle it as appropriate for your application
-		fmt.Printf("Error adding block range: %v\n", err)
-	}
+
+	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetBlockRange(number uint64) (chunk, start, end uint64, err error) {
+func (s *SqlLiteDatabase) GetChunkRange(number uint64) (chunk, start, end uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	err = s.db.QueryRow("SELECT chunk, start, end FROM block_ranges WHERE start <= ? AND end >= ?",
-		number, number).Scan(&chunk, &start, &end)
+	err = s.db.
+		QueryRow(
+			"SELECT chunk, start, end FROM chunks WHERE start <= ? AND end >= ?",
+			number, number).
+		Scan(&chunk, &start, &end)
+
+	err = errors.WithStack(err)
+
+	return
+}
+
+func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, 0, 0, fmt.Errorf("no block range found for number %d", number)
+		return errors.WithStack(err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO txs (txhash, block_number) VALUES (?, ?)")
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer stmt.Close()
+
+	for _, txhash := range txhashes {
+		_, err = stmt.Exec(txhash, blockNumber)
+		if err != nil {
+			return errors.WithStack(err)
 		}
-		return 0, 0, 0, fmt.Errorf("error querying block range: %w", err)
 	}
 
-	return chunk, start, end, nil
-}
-
-func (s *SqlLiteDatabase) AddTxBlockMap(txhash string, blockNumber uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err := s.db.Exec("INSERT OR REPLACE INTO tx_block_map (txhash, block_number) VALUES (?, ?)",
-		txhash, blockNumber)
-	if err != nil {
-		// Log the error or handle it as appropriate for your application
-		fmt.Printf("Error adding tx block map: %v\n", err)
-	}
+	err = tx.Commit()
+	return errors.WithStack(err)
 }
 
 func (s *SqlLiteDatabase) GetBlockForTx(txhash string) (blockNumber uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	err = s.db.QueryRow("SELECT block_number FROM tx_block_map WHERE txhash = ?", txhash).Scan(&blockNumber)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("no block number found for txhash %s", txhash)
-		}
-		return 0, fmt.Errorf("error querying block number: %w", err)
-	}
+	err = s.db.QueryRow("SELECT block_number FROM txs WHERE txhash = ?", txhash).Scan(&blockNumber)
+	err = errors.WithStack(err)
 
-	return blockNumber, nil
+	return
 }
 
-func (s *SqlLiteDatabase) GetChunkRange() (lowestChunk, highestChunk uint64, err error) {
+func (s *SqlLiteDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -127,15 +185,88 @@ func (s *SqlLiteDatabase) GetChunkRange() (lowestChunk, highestChunk uint64, err
 		SELECT 
 			COALESCE(MIN(chunk), 0) as lowest_chunk,
 			COALESCE(MAX(chunk), 0) as highest_chunk
-		FROM block_ranges
+		FROM chunks
 	`
 
 	err = s.db.QueryRow(query).Scan(&lowestChunk, &highestChunk)
-	if err != nil {
-		return 0, 0, fmt.Errorf("error querying chunk range: %w", err)
-	}
+	err = errors.WithStack(err)
 
-	return lowestChunk, highestChunk, nil
+	return
 }
 
-var _ Database = &SqlLiteDatabase{}
+func (s *SqlLiteDatabase) SetTip(tip cardano.Tip) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec("DELETE FROM tip")
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	_, err = tx.Exec(`
+        INSERT INTO tip (slot, hash, number)
+        VALUES (?, ?, ?)`,
+		tip.Point.Slot, tip.Point.Hash, tip.Block)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	err = tx.Commit()
+	return errors.WithStack(err)
+}
+
+func (s *SqlLiteDatabase) GetTip() (cardano.Tip, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var tip cardano.Tip
+	err := s.db.QueryRow(`
+        SELECT slot, hash, number
+        FROM tip
+        LIMIT 1`).Scan(&tip.Point.Slot, &tip.Point.Hash, &tip.Block)
+
+	if err == sql.ErrNoRows {
+		return cardano.Tip{
+			Point: cardano.Point{
+				Slot: 0,
+				Hash: make(cardano.HexBytes, 32),
+			},
+			Block: 0,
+		}, nil
+	}
+
+	return tip, errors.WithStack(err)
+}
+
+func (s *SqlLiteDatabase) AddBlockPoint(number uint64, point cardano.Point) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err = s.db.Exec(
+		"INSERT OR REPLACE INTO points (number, slot, hash) VALUES (?, ?, ?)",
+		number, point.Slot, point.Hash.String())
+
+	return errors.WithStack(err)
+}
+
+func (s *SqlLiteDatabase) GetBlockPoint(number uint64) (point cardano.Point, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// TODO: continue from here
+	err = s.db.QueryRow(
+		"SELECT slot, hash FROM points WHERE number = ?",
+		number).Scan(&point.Slot, &point.Hash)
+
+	if err == sql.ErrNoRows {
+		err = errors.New("block point not found")
+	}
+
+	return point, errors.WithStack(err)
+}

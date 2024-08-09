@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"math"
 	"net"
 	"reflect"
@@ -57,29 +56,31 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 		keepAliveCaller: NewPeriodicCaller(time.Second*4, func() {
 			client.keepAlive()
 		}),
-		keepAliveMu: &sync.Mutex{},
-		in:          NewMessageReader(),
-		params:      params,
-		log:         Log(),
-		tipStore:    options.TipStore,
+		in:                NewMessageReader(),
+		params:            params,
+		log:               Log(),
+		tipStore:          options.TipStore,
+		blockCallbackMu:   &sync.Mutex{},
+		messageCallbackMu: &sync.Mutex{},
 	}
 
 	return
 }
 
 type Client struct {
-	options         *ClientOptions
-	conn            net.Conn
-	keepAliveCaller *PeriodicCaller
-	keepAliveMu     *sync.Mutex
-	in              *MessageReader
-	inStream        chan Message
-	params          *NetworkParams
-	log             *zerolog.Logger
-	tipStore        TipStore
-	tip             Tip
-	shutdown        bool
-	blockCallback   func(block *Block)
+	options           *ClientOptions
+	conn              net.Conn
+	keepAliveCaller   *PeriodicCaller
+	in                *MessageReader
+	params            *NetworkParams
+	log               *zerolog.Logger
+	tip               Tip
+	tipStore          TipStore
+	shutdown          bool
+	blockCallbacks    []*func(block *Block)
+	blockCallbackMu   *sync.Mutex
+	messageCallbacks  []*func(message Message)
+	messageCallbackMu *sync.Mutex
 }
 
 func (c *Client) GetTip() (tip Tip, err error) {
@@ -121,8 +122,6 @@ func (c *Client) Start() (err error) {
 }
 
 func (c *Client) followChain() {
-	fmt.Println("FOLLLLLLLOW")
-
 	lastTip := c.tip
 
 	if c.tip.Point.Slot == 0 {
@@ -137,13 +136,15 @@ func (c *Client) followChain() {
 			return
 		}
 
-		notFound, err := ReceiveNext[*MessageIntersectNotFound](c)
+		notFound, err := ReceiveNextOfType[*MessageIntersectNotFound](c)
 		if err != nil {
 			c.log.Error().Msgf("follow chain failure: %+v", err)
 			return
 		}
 
 		lastTip = notFound.Tip
+	} else {
+		c.log.Info().Msg("following chain from previous tip")
 	}
 
 	err := c.SendMessage(&MessageFindIntersect{Points: []Point{lastTip.Point}})
@@ -152,56 +153,57 @@ func (c *Client) followChain() {
 		return
 	}
 
-	intersect, err := ReceiveNext[*MessageIntersectFound](c)
+	intersect, err := ReceiveNextOfType[*MessageIntersectFound](c)
 	if err != nil {
 		c.log.Error().Msgf("follow chain failure: %+v", err)
 		return
 	}
 
-	c.log.Info().Msgf("got intersect %+v", intersect)
+	c.log.Info().Msgf("new tip: %s", intersect.Tip)
 
-	for {
+	requestNext := func() (err error) {
 		err = c.SendMessage(&MessageRequestNext{})
 		if err != nil {
 			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
 			return
 		}
-
-		next, err2 := c.ReceiveNext()
-		if err2 != nil {
-			err = err2
-			return
-		}
-
-		var ok bool
-
-		switch msg := next.(type) {
-		case *MessageRollForward:
-			fmt.Println("ROLL FORWARD")
-			ok = true
-			c.tip = msg.Tip
-			c.broadcastNextBlock(c.tip)
-		case *MessageRollBackward:
-			fmt.Println("ROLL BACKWARD")
-			ok = true
-		case *MessageAwaitReply:
-			fmt.Println("AWAIT REPLY")
-			ok = true
-		}
-
-		if ok {
-			if j, err := json.MarshalIndent(next, "", "  "); err == nil {
-				fmt.Println(string(j))
-			}
-		} else {
-			err = errors.Errorf("expected chain sync protocol message, got %T", next)
-			// TODO: clean
-			if err != nil {
-				log.Fatal().Msgf("%+v", errors.WithStack(err))
-			}
-			return
-		}
+		return
 	}
+
+	requestNext()
+
+	fetchAndBroadcast := func(point Point) {
+		block, err2 := c.FetchBlock(c.tip.Point)
+		if err2 != nil {
+			log.Error().Msgf("failed to fetch block post roll forward: %+v", errors.WithStack(err2))
+			return
+		}
+		c.broadcastNextBlock(block)
+	}
+
+	c.OnMessage(func(message Message) {
+		var logMessage bool
+
+		switch msg := message.(type) {
+		case *MessageRollForward:
+			logMessage = true
+			c.tip = msg.Tip
+			go fetchAndBroadcast(msg.Tip.Point)
+			requestNext()
+		case *MessageRollBackward:
+			logMessage = true
+			c.tip = msg.Tip
+			go fetchAndBroadcast(msg.Tip.Point)
+			requestNext()
+		case *MessageAwaitReply:
+		}
+
+		if logMessage {
+			if j, err := json.MarshalIndent(message, "", "  "); err == nil {
+				c.log.Debug().Msgf("%T -> %s", message, string(j))
+			}
+		}
+	})
 }
 
 // var DefaultMainnetTip = Tip{
@@ -212,20 +214,41 @@ func (c *Client) followChain() {
 // 	Block: 10471759,
 // }
 
-func (c *Client) OnBlock(cb func(block *Block)) {
-	c.blockCallback = cb
+func (c *Client) OnBlock(callback func(msg *Block)) func() {
+	c.blockCallbackMu.Lock()
+	defer c.blockCallbackMu.Unlock()
+
+	c.blockCallbacks = append(c.blockCallbacks, &callback)
+
+	return func() {
+		c.blockCallbackMu.Lock()
+		defer c.blockCallbackMu.Unlock()
+
+		for i, cb := range c.blockCallbacks {
+			if cb == &callback {
+				lastIndex := len(c.blockCallbacks) - 1
+				c.blockCallbacks[i] = c.blockCallbacks[lastIndex]
+				c.blockCallbacks = c.blockCallbacks[:lastIndex]
+				break
+			}
+		}
+	}
 }
 
-func (c *Client) broadcastNextBlock(tip Tip) {
-	if c.blockCallback == nil {
-		return
+func (c *Client) broadcastNextBlock(block *Block) {
+	c.log.Info().Msgf("block in: %T", block)
+	c.blockCallbackMu.Lock()
+	callbacks := make([]*func(*Block), len(c.blockCallbacks))
+	copy(callbacks, c.blockCallbacks)
+	c.blockCallbackMu.Unlock()
+
+	c.log.Debug().Msgf("BROADCAST BLOCK: %d\n", block.Data.Header.Body.Number)
+
+	c.log.Debug().Msg("-------------------------")
+	for _, cb := range callbacks {
+		(*cb)(block)
 	}
-	block, err := c.FetchBlock(tip.Point)
-	if err != nil {
-		log.Error().Msgf("%+v", errors.WithStack(err))
-		return
-	}
-	c.blockCallback(block)
+	c.log.Debug().Msg("+++++++++++++++++++++++++")
 }
 
 func (c *Client) Stop() (err error) {
@@ -257,10 +280,10 @@ func (c *Client) dial() (err error) {
 }
 
 func (c *Client) beginReadStream(wg *sync.WaitGroup) {
-	c.inStream = make(chan Message)
+	// c.inStream = make(chan Message)
 	wg.Done()
 
-	defer close(c.inStream)
+	// defer close(c.inStream)
 	for {
 		if c.shutdown {
 			return
@@ -286,10 +309,28 @@ func (c *Client) beginReadStream(wg *sync.WaitGroup) {
 			return
 		}
 		for _, message := range messages {
-			c.log.Info().Msgf("message in: %T", message)
-			c.inStream <- message
+			c.broadcastNextMessage(message)
 		}
 	}
+}
+
+func (c *Client) broadcastNextMessage(message Message) {
+	protocol, _ := MessageProtocolMap[reflect.TypeOf(message)]
+	if protocol == ProtocolKeepAlive {
+		// we ignore incoming keep alive requests because we never close the connection
+		return
+	}
+	c.log.Info().Msgf("message in: %T", message)
+	c.messageCallbackMu.Lock()
+	callbacks := make([]*func(Message), len(c.messageCallbacks))
+	copy(callbacks, c.messageCallbacks)
+	c.messageCallbackMu.Unlock()
+
+	c.log.Debug().Msg("-------------------------")
+	for _, cb := range callbacks {
+		(*cb)(message)
+	}
+	c.log.Debug().Msg("+++++++++++++++++++++++++")
 }
 
 func (c *Client) handshake() (err error) {
@@ -301,13 +342,9 @@ func (c *Client) handshake() (err error) {
 		return
 	}
 
-	acceptVersionMsg, err := ReceiveNextWithTimeout[*MessageAcceptVersion](c, time.Second*5)
+	acceptVersionMsg, err := ReceiveNextOfType[*MessageAcceptVersion](c)
 	if err != nil {
-		err = errors.Errorf(
-			"handshake failed, received message %T, expected %T\n%+v",
-			acceptVersionMsg,
-			&MessageAcceptVersion{},
-		)
+		err = errors.Wrap(err, "handshake failed")
 		return
 	}
 
@@ -317,8 +354,8 @@ func (c *Client) handshake() (err error) {
 }
 
 func (c *Client) keepAlive() {
-	c.keepAliveMu.Lock()
-	defer c.keepAliveMu.Unlock()
+	// c.keepAliveMu.Lock()
+	// defer c.keepAliveMu.Unlock()
 
 	cookieBytes := make([]byte, 4)
 	_, _ = rand.Read(cookieBytes)
@@ -345,8 +382,8 @@ func EncodeCardanoTimestamp(timestamp uint32) []byte {
 
 func (c *Client) SendSegment(segment *Segment) (err error) {
 	if segment.Protocol != ProtocolKeepAlive {
-		c.keepAliveMu.Lock()
-		defer c.keepAliveMu.Unlock()
+		// c.keepAliveMu.Lock()
+		// defer c.keepAliveMu.Unlock()
 	}
 
 	writeBytes, err := segment.MarshalDataItem()
@@ -355,11 +392,13 @@ func (c *Client) SendSegment(segment *Segment) (err error) {
 	}
 
 	for _, msg := range segment.messages {
-		c.log.Info().Msgf(
-			"message out: %T, protocol: %d, subprotocol: %d",
-			msg,
-			segment.Protocol,
-			msg.GetSubprotocol())
+		if segment.Protocol != ProtocolKeepAlive {
+			c.log.Info().Msgf(
+				"message out: %T, protocol: %d, subprotocol: %d",
+				msg,
+				segment.Protocol,
+				msg.GetSubprotocol())
+		}
 	}
 	c.log.Debug().Msgf("write: %x", writeBytes)
 
@@ -397,10 +436,10 @@ func (c *Client) SendMessage(message Message) (err error) {
 	}
 
 	// timestamp := GetCardanoTimestamp()
-	// fmt.Printf("Cardano Timestamp: %d\n", timestamp)
+	// c.log.Debug().Msg("Cardano Timestamp: %d\n", timestamp)
 
 	// encodedTimestamp := EncodeCardanoTimestamp(timestamp)
-	// fmt.Printf("Encoded Timestamp: %v\n", encodedTimestamp)
+	// c.log.Debug().Msg("Encoded Timestamp: %v\n", encodedTimestamp)
 
 	segment := &Segment{
 		Timestamp: 0,
@@ -428,7 +467,7 @@ func (c *Client) FetchTip() (tip Tip, err error) {
 		return
 	}
 
-	intersectNotFound, err := ReceiveNext[*MessageIntersectNotFound](c)
+	intersectNotFound, err := ReceiveNextOfType[*MessageIntersectNotFound](c)
 	if err != nil {
 		return
 	}
@@ -461,6 +500,40 @@ func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 }
 
 func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
+	ready := make(chan struct{})
+	readyClosed := false
+	done := make(chan struct{})
+	var mu sync.Mutex
+
+	cleanup := c.OnMessage(func(message Message) {
+		if !readyClosed {
+			readyClosed = true
+			close(ready)
+		}
+		switch msg := message.(type) {
+		case *MessageStartBatch:
+			return
+
+		case *MessageBlock:
+			var block *Block
+			block, err = msg.Block()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			blocks = append(blocks, block)
+			mu.Unlock()
+			return
+
+		case *MessageNoBlocks, *MessageBatchDone:
+			close(done)
+			return
+		}
+	})
+	defer cleanup()
+
+	<-ready
+
 	err = c.SendMessage(&MessageRequestRange{
 		From: from,
 		To:   to,
@@ -469,85 +542,99 @@ func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
 		return
 	}
 
-	for {
-		var next Message
-		next, err = c.ReceiveNext()
-		if err != nil {
-			return
-		}
-
-		switch msg := next.(type) {
-		case *MessageStartBatch:
-			continue
-
-		case *MessageBlock:
-			var block *Block
-			block, err = msg.Block()
-			if err != nil {
-				return
-			}
-			blocks = append(blocks, block)
-			continue
-
-		case *MessageNoBlocks, *MessageBatchDone:
-			return
-		}
-
-		err = errors.Errorf("expected block fetch protocol message, got %T", next)
+	select {
+	case <-done:
 		return
+	case <-time.After(60 * time.Second): // TODO: can a batch take this long?
+		err = errors.New("timeout waiting for range fetch to complete")
+		return
+	}
+}
+
+func (c *Client) OnMessage(callback func(msg Message)) func() {
+	c.messageCallbackMu.Lock()
+	defer c.messageCallbackMu.Unlock()
+
+	c.messageCallbacks = append(c.messageCallbacks, &callback)
+
+	return func() {
+		c.messageCallbackMu.Lock()
+		defer c.messageCallbackMu.Unlock()
+
+		for i, cb := range c.messageCallbacks {
+			if cb == &callback {
+				lastIndex := len(c.messageCallbacks) - 1
+				c.messageCallbacks[i] = c.messageCallbacks[lastIndex]
+				c.messageCallbacks = c.messageCallbacks[:lastIndex]
+				break
+			}
+		}
 	}
 }
 
 func (c *Client) ReceiveNext() (message Message, err error) {
-	message, ok := <-c.inStream
-	if !ok {
-		err = errors.New("message stream closed")
-		return
-	}
-	if _, isKeepAlive := message.(*MessageKeepAlive); isKeepAlive {
-		// we ignore incoming keep alive requests because we never close the connection
-		return c.ReceiveNext()
-	}
-	return
-}
+	cbChan := make(chan Message, 1)
+	var cbClosed bool
+	cbClose := c.OnMessage(func(msg Message) {
+		if cbClosed {
+			return
+		}
+		cbClosed = true
+		cbChan <- msg
+		close(cbChan)
+	})
+	defer cbClose()
 
-func (c *Client) ReceiveNextWithTimeout(timeout time.Duration) (message any, err error) {
 	select {
-	case message = <-c.inStream:
+	case message = <-cbChan:
 		return
 
-	case <-time.After(timeout):
+	case <-time.After(time.Second * 5):
 		err = errors.New("timeout while waiting for node response")
 		return
 	}
-}
 
-func ReceiveNext[T Message](c *Client) (message T, err error) {
-	m, err := c.ReceiveNext()
-	if err != nil {
-		return
-	}
-
-	if typed, ok := m.(T); ok {
-		message = typed
-		return
-	}
-
-	err = errors.Errorf("expected next message of type %T, got %T", *new(T), m)
 	return
 }
 
-func ReceiveNextWithTimeout[T Message](c *Client, timeout time.Duration) (message T, err error) {
-	m, err := c.ReceiveNextWithTimeout(timeout)
+func (c *Client) ReceiveNextOfType(message *Message) (err error) {
+	cbChan := make(chan struct{})
+	var cbClose func()
+	cbClose = c.OnMessage(func(msg Message) {
+		if reflect.TypeOf(*message) != reflect.TypeOf(msg) {
+			return
+		}
+		*message = msg
+		cbChan <- struct{}{}
+		cbClose()
+		close(cbChan)
+	})
+
+	select {
+	case <-cbChan:
+		return
+
+	case <-time.After(time.Second * 5):
+		err = errors.New("timeout while waiting for node response")
+		return
+	}
+
+	return
+}
+
+func ReceiveNextOfType[T Message](c *Client) (message T, err error) {
+	var msg Message = *new(T)
+	err = c.ReceiveNextOfType(&msg)
 	if err != nil {
 		return
 	}
 
-	if typed, ok := m.(T); ok {
+	if typed, ok := msg.(T); ok {
 		message = typed
 		return
 	}
 
-	err = errors.Errorf("expected next message of type %T, got %T", *new(T), m)
+	err = errors.Errorf("expected next message of type %T, got %T", *new(T), msg)
+
 	return
 }

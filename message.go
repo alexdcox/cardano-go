@@ -56,7 +56,7 @@ func (r *MessageReader) readHeader(data []byte) (timestamp []byte, protocol uint
 	byteLenBytes := data[6:8]
 	byteLen = binary.BigEndian.Uint16(byteLenBytes)
 
-	fmt.Printf("new segment. timestamp %x, protocol %v, byteLen %v\n", timestamp, protocol, byteLen)
+	r.log.Debug().Msgf("new segment. timestamp %x, protocol %v, byteLen %v", timestamp, protocol, byteLen)
 
 	return
 }
@@ -69,7 +69,7 @@ func (r *MessageReader) reset() {
 }
 
 func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
-	fmt.Printf("%x\n", data)
+	r.log.Debug().Msgf("read: %x", data)
 
 	i := 0
 	var nextMessages []Message
@@ -85,7 +85,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 
 		if len(r.buffer) == 0 {
 			if len(data[i:]) <= 8 {
-				fmt.Printf("partial/lone header detected [%d:%d]\n", i, len(data))
+				r.log.Debug().Msgf("partial/lone header detected [%d:%d]", i, len(data))
 				r.partialHeader = append(r.partialHeader, data[i:]...)
 				return
 			}
@@ -93,7 +93,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 			headerData := data[i:]
 
 			if len(r.partialHeader) > 0 {
-				fmt.Println("prepending partial header")
+				r.log.Debug().Msg("prepending partial header")
 				headerData = append(r.partialHeader, data[i:]...)
 			}
 
@@ -105,7 +105,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 			i += 8
 
 			if len(r.partialHeader) > 0 {
-				fmt.Printf("bringin back index %d bytes for partial header\n", len(r.partialHeader))
+				r.log.Debug().Msgf("bringin back index %d bytes for partial header", len(r.partialHeader))
 				i -= len(r.partialHeader)
 				r.partialHeader = []byte{}
 			}
@@ -118,13 +118,13 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 			bytesShouldRead = bytesCanRead
 		}
 
-		fmt.Printf("read data to segment [%d:%d]\n", i, i+bytesShouldRead)
+		r.log.Debug().Msgf("read data to segment [%d:%d]", i, i+bytesShouldRead)
 		r.buffer = append(r.buffer, data[i:i+bytesShouldRead]...)
 		i += bytesShouldRead
 
 		if len(r.buffer) == int(r.length) {
 			if r.batching {
-				fmt.Println("batched segment complete")
+				r.log.Debug().Msg("batched segment complete")
 				r.batchBuffer = append(r.batchBuffer, r.buffer...)
 
 				blockMessages, remaining, err2 := r.nextBlocks(r.batchBuffer)
@@ -141,7 +141,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 					if _, batchDone := messages[len(messages)-1].(*MessageBatchDone); batchDone {
 						if len(r.batchBuffer) > 0 {
 							err = errors.Errorf(
-								"expected batch done message to complete batch buffer, have %d bytes remaining in buffer\n%x\n",
+								"expected batch done message to complete batch buffer, have %d bytes remaining in buffer\n%x",
 								len(r.batchBuffer),
 								r.batchBuffer)
 							return
@@ -154,7 +154,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 				r.reset()
 				continue
 			} else {
-				fmt.Println("segment complete")
+				r.log.Debug().Msg("segment complete")
 			}
 
 			segmentData := r.buffer
@@ -191,7 +191,7 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 		}
 
 		if bytes.Equal(data[i:], batchEnd) {
-			fmt.Println("CAUGHT BATCH DONE")
+			r.log.Debug().Msg("read batch done")
 			i += 2
 			messages = append(messages, &MessageBatchDone{})
 			return
@@ -207,9 +207,9 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 			}
 			err = errors.Errorf("expecting batch to have block start 0x8204, first 10 bytes are: %s at index %d", printFirstTenBytesHex(data[i:]), i)
 			for x, t := range test {
-				fmt.Printf("\n%d --> %x\n\n", x, t)
+				r.log.Debug().Msgf("\n%d --> %x", x, t)
 			}
-			fmt.Printf("\nbatchBuffer:\n%x\n\n", test2)
+			r.log.Debug().Msgf("\nbatchBuffer:\n%x", test2)
 			return
 		}
 
@@ -228,11 +228,11 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 
 		var a any
 		if err = r.cbor.Unmarshal(nextMessage.BlockData, &a); err != nil {
-			fmt.Printf("unable to unmarshal block data %+v\n", err)
+			r.log.Debug().Msgf("unable to unmarshal block data %+v", err)
 			os.Exit(1)
 		}
 
-		fmt.Printf("read block message from buffer[%d:%d/%d]\n", i, i+bytesRead, len(data))
+		r.log.Debug().Msgf("read block message from buffer[%d:%d/%d]", i, i+bytesRead, len(data))
 
 		messages = append(messages, nextMessage)
 		test = append(test, data[i:i+bytesRead])
@@ -261,7 +261,7 @@ func (r *MessageReader) nextMessages(data []byte) (messages []Message, remaining
 		}
 
 		if _, is := msg.(*MessageStartBatch); is {
-			fmt.Println("batch start")
+			r.log.Debug().Msg("read batch start")
 			r.batching = true
 		}
 
@@ -280,7 +280,7 @@ func (r *MessageReader) nextMessage(data []byte) (message Message, remaining []b
 	var a []any
 	remaining, err = r.cbor.UnmarshalFirst(data, &a)
 	if err != nil {
-		fmt.Printf("unmarshal cbor error: %x\n", data)
+		r.log.Debug().Msgf("unmarshal cbor error: %x", data)
 		err = errors.WithStack(err)
 		return
 	}

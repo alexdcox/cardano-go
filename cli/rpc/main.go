@@ -3,12 +3,12 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	. "github.com/alexdcox/cardano-go"
+	"github.com/alexdcox/cardano-go/cli/rpc/event"
 	db2 "github.com/alexdcox/cardano-go/db"
 	"github.com/pkg/errors"
 )
@@ -147,71 +147,8 @@ func main() {
 }
 
 func initialise(chunkReader *ChunkReader, db db2.Database, client *Client) (err error) {
-	_, lastSavedChunk, err := db.GetChunkSpan()
-	if err != nil {
-		return
-	}
-
-	chunkReader.WaitForReady()
-
-	err = chunkReader.LoadChunkFiles(lastSavedChunk)
-	if err != nil {
-		return
-	}
-
-	// Write chunk filesystem indexes to database
-
-	result, duration := chunkReader.ProcessBlockRanges()
-	fmt.Printf("Processing took %v\n", duration)
-
-	for _, r := range result {
-		err = db.SetChunkRange(r.Chunk, r.Min, r.Max)
-	}
-
-	// Watch chunk filesystem for updates and update database accordingly
-
-	go func() {
-		err = chunkReader.WatchChunkFiles(func(chunk, first, last uint64) {
-			err = db.SetChunkRange(chunk, first, last)
-			if err != nil {
-				log.Error().Msgf("%+v", err)
-			}
-		})
-		if err != nil {
-			log.Error().Msgf("%+v", err)
-		}
-	}()
-
+	event.ChunkUpdatesToDatabase(chunkReader, db)
 	err = client.Start()
-
-	// Write node-to-node block updates to database
-
-	client.OnBlock(func(block *Block) {
-		err = db.AddBlockPoint(block.Data.Header.Body.Number, Point{
-			Slot: block.Data.Header.Body.Slot,
-			Hash: block.Data.Header.Body.Hash,
-		})
-		if err != nil {
-			log.Fatal().Msgf("CRITICAL ERROR: unable to write block point index, %+v", err)
-		}
-		var hashes []string
-		for i, tx := range block.Data.TransactionBodies {
-			hash, err2 := tx.Hash()
-			if err2 != nil {
-				log.Fatal().Msgf(
-					"CRITICAL ERROR: unable to hash tx %d from block %d: %+v",
-					i,
-					block.Data.Header.Body.Number,
-					err2,
-				)
-			}
-			hashes = append(hashes, hash.String())
-		}
-		err = db.AddTxsForBlock(hashes, block.Data.Header.Body.Number)
-		if err != nil {
-			log.Fatal().Msgf("CRITICAL ERROR: unable to update txhash to block index", err)
-		}
-	})
-
+	event.NodeUpdatesToDatabase(client, db)
 	return
 }

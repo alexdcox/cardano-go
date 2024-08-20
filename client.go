@@ -3,22 +3,22 @@ package cardano
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
-	"math"
 	"net"
 	"reflect"
 	"sync"
 	"time"
 
+	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/blake2b"
 )
 
 type ClientOptions struct {
 	HostPort    string
 	Network     Network
-	TipOverride *Tip
-	TipStore    TipStore
+	Database    Database
+	TipOverride *PointAndBlockNum
 }
 
 func (o *ClientOptions) setDefaults() {
@@ -30,8 +30,8 @@ func (o *ClientOptions) setDefaults() {
 		o.Network = defaultClientOptions.Network
 	}
 
-	if o.TipStore == nil {
-		o.TipStore = NewInMemoryTipStore()
+	if o.Database == nil {
+		o.Database = NewInMemoryDatabase()
 	}
 }
 
@@ -56,36 +56,34 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 		keepAliveCaller: NewPeriodicCaller(time.Second*4, func() {
 			client.keepAlive()
 		}),
-		in:                NewMessageReader(),
-		params:            params,
-		log:               Log(),
-		tipStore:          options.TipStore,
-		blockCallbackMu:   &sync.Mutex{},
-		messageCallbackMu: &sync.Mutex{},
+		in:         NewMessageReader(),
+		params:     params,
+		log:        LogAtLevel(zerolog.InfoLevel),
+		db:         options.Database,
+		pubsub:     NewQueue[any](),
+		shutdownWg: &sync.WaitGroup{},
 	}
 
 	return
 }
 
 type Client struct {
-	options           *ClientOptions
-	conn              net.Conn
-	keepAliveCaller   *PeriodicCaller
-	in                *MessageReader
-	params            *NetworkParams
-	log               *zerolog.Logger
-	tip               Tip
-	tipStore          TipStore
-	shutdown          bool
-	blockCallbacks    []*func(block *Block)
-	blockCallbackMu   *sync.Mutex
-	messageCallbacks  []*func(message Message)
-	messageCallbackMu *sync.Mutex
+	options         *ClientOptions
+	conn            net.Conn
+	keepAliveCaller *PeriodicCaller
+	in              *MessageReader
+	params          *NetworkParams
+	log             *zerolog.Logger
+	tip             PointAndBlockNum
+	db              Database
+	shutdown        bool
+	shutdownWg      *sync.WaitGroup
+	pubsub          PubSubQueue[any]
 }
 
-func (c *Client) GetTip() (tip Tip, err error) {
-	return c.tip, nil
-}
+// func (c *Client) GetTip() (tip Tip, err error) {
+// 	return c.tip, nil
+// }
 
 func (c *Client) Start() (err error) {
 	c.log.Info().Msg("starting client")
@@ -100,6 +98,8 @@ func (c *Client) Start() (err error) {
 	go c.beginReadStream(wg)
 	wg.Wait()
 
+	c.shutdownWg.Add(1)
+
 	err = c.handshake()
 	if err != nil {
 		return
@@ -110,10 +110,11 @@ func (c *Client) Start() (err error) {
 	if c.options.TipOverride != nil {
 		c.tip = *c.options.TipOverride
 	} else {
-		c.tip, err = c.tipStore.GetTip()
-		if err != nil {
-			return
+		tip, err2 := c.db.GetTip()
+		if err2 != nil {
+			return err2
 		}
+		c.tip = tip
 	}
 
 	go c.followChain()
@@ -122,19 +123,19 @@ func (c *Client) Start() (err error) {
 }
 
 func (c *Client) followChain() {
-	lastTip := c.tip
-
 	if c.tip.Point.Slot == 0 {
 		c.log.Info().Msg("no previous or configured tip, following chain from node tip")
 
-		err := c.SendMessage(&MessageFindIntersect{Points: []Point{{
-			Slot: 0,
-			Hash: make([]byte, 32),
-		}}})
-		if err != nil {
-			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
-			return
-		}
+		go func() {
+			err := c.SendMessage(&MessageFindIntersect{Points: []Point{{
+				Slot: 0,
+				Hash: make([]byte, 32),
+			}}})
+			if err != nil {
+				c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+				return
+			}
+		}()
 
 		notFound, err := ReceiveNextOfType[*MessageIntersectNotFound](c)
 		if err != nil {
@@ -142,24 +143,24 @@ func (c *Client) followChain() {
 			return
 		}
 
-		lastTip = notFound.Tip
+		c.tip = notFound.Tip
 	} else {
-		c.log.Info().Msg("following chain from previous tip")
+		c.log.Info().Msgf("following chain from previous tip: %s", c.tip)
 	}
 
-	err := c.SendMessage(&MessageFindIntersect{Points: []Point{lastTip.Point}})
-	if err != nil {
-		c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
-		return
-	}
+	go func() {
+		err := c.SendMessage(&MessageFindIntersect{Points: []Point{c.tip.Point}})
+		if err != nil {
+			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
+			return
+		}
+	}()
 
-	intersect, err := ReceiveNextOfType[*MessageIntersectFound](c)
+	_, err := ReceiveNextOfType[*MessageIntersectFound](c)
 	if err != nil {
 		c.log.Error().Msgf("follow chain failure: %+v", err)
 		return
 	}
-
-	c.log.Info().Msgf("new tip: %s", intersect.Tip)
 
 	requestNext := func() (err error) {
 		err = c.SendMessage(&MessageRequestNext{})
@@ -172,36 +173,65 @@ func (c *Client) followChain() {
 
 	requestNext()
 
-	fetchAndBroadcast := func(point Point) {
-		block, err2 := c.FetchBlock(c.tip.Point)
-		if err2 != nil {
-			log.Error().Msgf("failed to fetch block post roll forward: %+v", errors.WithStack(err2))
+	c.pubsub.On(func(i any) {
+		message, ok := i.(Message)
+		if !ok {
 			return
 		}
-		c.broadcastNextBlock(block)
-	}
-
-	c.OnMessage(func(message Message) {
-		var logMessage bool
-
 		switch msg := message.(type) {
 		case *MessageRollForward:
-			logMessage = true
-			c.tip = msg.Tip
-			go fetchAndBroadcast(msg.Tip.Point)
-			requestNext()
-		case *MessageRollBackward:
-			logMessage = true
-			c.tip = msg.Tip
-			go fetchAndBroadcast(msg.Tip.Point)
-			requestNext()
-		case *MessageAwaitReply:
-		}
+			var nextTip PointAndBlockNum
+			if a, ok := msg.Data.Subtype.(*MessageRollForwardDataA); ok {
+				hash := blake2b.Sum256(a.BlockHeader)
 
-		if logMessage {
-			if j, err := json.MarshalIndent(message, "", "  "); err == nil {
-				c.log.Debug().Msgf("%T -> %s", message, string(j))
+				header := &BlockHeader{}
+				err = cbor.Unmarshal(a.BlockHeader, &header)
+				if err != nil {
+					log.Fatal().Msgf("%+v", errors.WithStack(err))
+				}
+
+				nextTip = PointAndBlockNum{
+					Block: header.Body.Number,
+					Point: Point{
+						Slot: header.Body.Slot,
+						Hash: hash[:],
+					},
+				}
+			} else {
+				log.Fatal().Msgf("unexpected roll forward message type: %T", msg)
 			}
+
+			block, err2 := c.FetchBlock(nextTip.Point)
+			if err2 != nil {
+				log.Error().Msgf("failed to fetch block post roll forward: %+v", err2)
+				return
+			}
+
+			c.log.Info().Msgf("roll forward: %s", c.tip)
+			c.pubsub.Broadcast(BlockWithPosition{
+				Block:  *block,
+				Number: nextTip.Block,
+				Point:  nextTip.Point,
+			})
+			c.tip = nextTip
+			requestNext()
+
+		case *MessageRollBackward:
+			block, err2 := c.FetchBlock(*msg.Point.Value)
+			if err2 != nil {
+				log.Error().Msgf("failed to fetch block post roll backward: %+v", err2)
+				return
+			}
+			c.tip = PointAndBlockNum{
+				Point: *msg.Point.Value,
+				Block: block.Data.Header.Body.Number,
+			}
+			c.log.Info().Msgf("roll backward: %s", c.tip)
+			// TODO: Roll backwards logic (clean db)
+			requestNext()
+
+		case *MessageAwaitReply:
+			// do as they say, patiently wait
 		}
 	})
 }
@@ -214,45 +244,9 @@ func (c *Client) followChain() {
 // 	Block: 10471759,
 // }
 
-func (c *Client) OnBlock(callback func(msg *Block)) func() {
-	c.blockCallbackMu.Lock()
-	defer c.blockCallbackMu.Unlock()
-
-	c.blockCallbacks = append(c.blockCallbacks, &callback)
-
-	return func() {
-		c.blockCallbackMu.Lock()
-		defer c.blockCallbackMu.Unlock()
-
-		for i, cb := range c.blockCallbacks {
-			if cb == &callback {
-				lastIndex := len(c.blockCallbacks) - 1
-				c.blockCallbacks[i] = c.blockCallbacks[lastIndex]
-				c.blockCallbacks = c.blockCallbacks[:lastIndex]
-				break
-			}
-		}
-	}
-}
-
-func (c *Client) broadcastNextBlock(block *Block) {
-	c.log.Info().Msgf("block in: %T", block)
-	c.blockCallbackMu.Lock()
-	callbacks := make([]*func(*Block), len(c.blockCallbacks))
-	copy(callbacks, c.blockCallbacks)
-	c.blockCallbackMu.Unlock()
-
-	c.log.Debug().Msgf("BROADCAST BLOCK: %d\n", block.Data.Header.Body.Number)
-
-	c.log.Debug().Msg("-------------------------")
-	for _, cb := range callbacks {
-		(*cb)(block)
-	}
-	c.log.Debug().Msg("+++++++++++++++++++++++++")
-}
-
 func (c *Client) Stop() (err error) {
 	if c.shutdown {
+		c.log.Warn().Msg("client shutdown already in progress...")
 		return
 	}
 	c.shutdown = true
@@ -265,11 +259,11 @@ func (c *Client) Stop() (err error) {
 		return
 	}
 
-	return errors.WithStack(c.tipStore.SetTip(c.tip))
+	return errors.WithStack(c.db.SetTip(c.tip))
 }
 
 func (c *Client) dial() (err error) {
-	c.log.Info().Msgf("dialing node %s", c.options.HostPort)
+	c.log.Info().Msgf("dialing node: '%s'", c.options.HostPort)
 	c.conn, err = net.Dial("tcp", c.options.HostPort)
 	if err != nil {
 		return errors.WithStack(err)
@@ -289,11 +283,12 @@ func (c *Client) beginReadStream(wg *sync.WaitGroup) {
 			return
 		}
 
-		buf := make([]byte, int(math.Pow(2, 20)))
+		// buf := make([]byte, int(math.Pow(2, 20)))
+		buf := make([]byte, 402)
 		n, err := c.conn.Read(buf)
 		if err != nil {
 			if c.shutdown {
-				c.log.Info().Msg("throwing away last read, client shutting down")
+				// NOTE: throwing away last read, client shutting down
 				return
 			}
 			c.log.Error().Msgf("conn read error: %+v", errors.WithStack(err))
@@ -309,28 +304,10 @@ func (c *Client) beginReadStream(wg *sync.WaitGroup) {
 			return
 		}
 		for _, message := range messages {
-			c.broadcastNextMessage(message)
+			c.log.Info().Msgf("message in: %T", message)
+			c.pubsub.Broadcast(message)
 		}
 	}
-}
-
-func (c *Client) broadcastNextMessage(message Message) {
-	protocol, _ := MessageProtocolMap[reflect.TypeOf(message)]
-	if protocol == ProtocolKeepAlive {
-		// we ignore incoming keep alive requests because we never close the connection
-		return
-	}
-	c.log.Info().Msgf("message in: %T", message)
-	c.messageCallbackMu.Lock()
-	callbacks := make([]*func(Message), len(c.messageCallbacks))
-	copy(callbacks, c.messageCallbacks)
-	c.messageCallbackMu.Unlock()
-
-	c.log.Debug().Msg("-------------------------")
-	for _, cb := range callbacks {
-		(*cb)(message)
-	}
-	c.log.Debug().Msg("+++++++++++++++++++++++++")
 }
 
 func (c *Client) handshake() (err error) {
@@ -454,7 +431,7 @@ func (c *Client) SendMessage(message Message) (err error) {
 	return c.SendSegment(segment)
 }
 
-func (c *Client) FetchTip() (tip Tip, err error) {
+func (c *Client) FetchTip() (tip PointAndBlockNum, err error) {
 	err = c.SendMessage(&MessageFindIntersect{
 		Points: []Point{
 			{
@@ -500,15 +477,13 @@ func (c *Client) FetchBlock(point Point) (block *Block, err error) {
 }
 
 func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
-	ready := make(chan struct{})
-	readyClosed := false
 	done := make(chan struct{})
 	var mu sync.Mutex
 
-	cleanup := c.OnMessage(func(message Message) {
-		if !readyClosed {
-			readyClosed = true
-			close(ready)
+	cleanup := c.pubsub.On(func(i any) {
+		message, ok := i.(Message)
+		if !ok {
+			return
 		}
 		switch msg := message.(type) {
 		case *MessageStartBatch:
@@ -532,8 +507,6 @@ func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
 	})
 	defer cleanup()
 
-	<-ready
-
 	err = c.SendMessage(&MessageRequestRange{
 		From: from,
 		To:   to,
@@ -551,31 +524,14 @@ func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
 	}
 }
 
-func (c *Client) OnMessage(callback func(msg Message)) func() {
-	c.messageCallbackMu.Lock()
-	defer c.messageCallbackMu.Unlock()
-
-	c.messageCallbacks = append(c.messageCallbacks, &callback)
-
-	return func() {
-		c.messageCallbackMu.Lock()
-		defer c.messageCallbackMu.Unlock()
-
-		for i, cb := range c.messageCallbacks {
-			if cb == &callback {
-				lastIndex := len(c.messageCallbacks) - 1
-				c.messageCallbacks[i] = c.messageCallbacks[lastIndex]
-				c.messageCallbacks = c.messageCallbacks[:lastIndex]
-				break
-			}
-		}
-	}
-}
-
 func (c *Client) ReceiveNext() (message Message, err error) {
 	cbChan := make(chan Message, 1)
 	var cbClosed bool
-	cbClose := c.OnMessage(func(msg Message) {
+	cbClose := c.pubsub.On(func(i any) {
+		msg, ok := i.(Message)
+		if !ok {
+			return
+		}
 		if cbClosed {
 			return
 		}
@@ -599,27 +555,30 @@ func (c *Client) ReceiveNext() (message Message, err error) {
 
 func (c *Client) ReceiveNextOfType(message *Message) (err error) {
 	cbChan := make(chan struct{})
-	var cbClose func()
-	cbClose = c.OnMessage(func(msg Message) {
-		if reflect.TypeOf(*message) != reflect.TypeOf(msg) {
+	cbClose := c.pubsub.On(func(i any) {
+		if reflect.TypeOf(*message) != reflect.TypeOf(i) {
 			return
 		}
-		*message = msg
+		*message = i.(Message)
 		cbChan <- struct{}{}
-		cbClose()
 		close(cbChan)
 	})
+	defer cbClose()
 
 	select {
 	case <-cbChan:
 		return
 
 	case <-time.After(time.Second * 5):
-		err = errors.New("timeout while waiting for node response")
+		err = errors.Errorf("timeout while waiting for node response: %s", reflect.TypeOf(*message))
 		return
 	}
 
 	return
+}
+
+func (c *Client) Subscribe(cb func(i any)) func() {
+	return c.pubsub.On(cb)
 }
 
 func ReceiveNextOfType[T Message](c *Client) (message T, err error) {

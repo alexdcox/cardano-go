@@ -130,8 +130,8 @@ type BlockHeader struct {
 		IssuerVkey      HexBytes `json:"issuerVkey,omitempty"`
 		VrfKey          HexBytes `json:"vrfKey,omitempty"`
 		VrfResult       VrfCert  `json:"vrfResult,omitempty"`
-		Size            uint64   `json:"size,omitempty"`
-		Hash            HexBytes `json:"hash,omitempty"`
+		BodySize        uint64   `json:"bodySize,omitempty"`
+		BodyHash        HexBytes `json:"bodyHash,omitempty"`
 		OperationalCert struct {
 			_         struct{} `cbor:",toarray"`
 			HotVkey   HexBytes `json:"hotVkey,omitempty"`
@@ -395,4 +395,10 @@ type VrfCert struct {
 	_   struct{} `cbor:",toarray"`
 	Pt1 HexBytes `json:"pt1"`
 	Pt2 HexBytes `json:"pt2"`
+}
+
+type BlockWithPosition struct {
+	Block  Block
+	Number uint64
+	Point  Point
 }

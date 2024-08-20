@@ -21,6 +21,11 @@ func Log() *zerolog.Logger {
 	return &globalLog
 }
 
+func LogAtLevel(level zerolog.Level) *zerolog.Logger {
+	l := log.Level(level)
+	return &l
+}
+
 func init() {
 	zerolog.TimeFieldFormat = time.TimeOnly
 	zerolog.ErrorStackMarshaler = MarshalStack

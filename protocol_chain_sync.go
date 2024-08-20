@@ -11,7 +11,7 @@ type MessageAwaitReply struct {
 type MessageRollForward struct {
 	WithSubprotocol
 	Data SubtypeOf[MessageRollForwardData] `json:"data"`
-	Tip  Tip                               `json:"tip"`
+	Tip  PointAndBlockNum                  `json:"tip"`
 }
 
 type MessageRollForwardData struct{}
@@ -53,8 +53,8 @@ func (m MessageRollForward) BlockHeader() (header *BlockHeader, err error) {
 
 type MessageRollBackward struct {
 	WithSubprotocol
-	Point Optional[Point] `json:"point,omitempty"`
-	Tip   Tip             `json:"tip,omitempty"`
+	Point Optional[Point]  `json:"point,omitempty"`
+	Tip   PointAndBlockNum `json:"tip,omitempty"`
 }
 
 type MessageFindIntersect struct {
@@ -64,13 +64,13 @@ type MessageFindIntersect struct {
 
 type MessageIntersectFound struct {
 	WithSubprotocol
-	Point Point `json:"point,omitempty"`
-	Tip   Tip   `json:"tip,omitempty"`
+	Point Point            `json:"point,omitempty"`
+	Tip   PointAndBlockNum `json:"tip,omitempty"`
 }
 
 type MessageIntersectNotFound struct {
 	WithSubprotocol
-	Tip Tip `json:"tip"`
+	Tip PointAndBlockNum `json:"tip"`
 }
 
 type MessageChainSyncDone struct {

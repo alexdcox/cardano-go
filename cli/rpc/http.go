@@ -9,7 +9,6 @@ import (
 	"time"
 
 	. "github.com/alexdcox/cardano-go"
-	db2 "github.com/alexdcox/cardano-go/db"
 	"github.com/alexdcox/cardano-go/rpcclient"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/labstack/echo/v4"
@@ -18,7 +17,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db db2.Database, client *Client) (server *HttpRpcServer, err error) {
+func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db Database, client *Client) (server *HttpRpcServer, err error) {
 	server = &HttpRpcServer{
 		config:      config,
 		client:      client,
@@ -34,7 +33,7 @@ type HttpRpcServer struct {
 	client      *Client
 	chunkReader *ChunkReader
 	config      *_config
-	db          db2.Database
+	db          Database
 }
 
 func (s *HttpRpcServer) Start() (err error) {

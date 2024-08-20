@@ -214,8 +214,8 @@ func (r *ChunkReader) WatchChunkFiles(cb func(chunk, first, last uint64)) (err e
 }
 
 type ChunkRange struct {
-	Min   uint64
-	Max   uint64
+	Start uint64
+	End   uint64
 	Chunk uint64
 }
 
@@ -235,16 +235,16 @@ func (r *ChunkReader) ProcessBlockRanges() ([]ChunkRange, time.Duration) {
 		// If this path is not in chunkRanges, initialize it
 		if _, exists := chunkRanges[path]; !exists {
 			chunkRanges[path] = ChunkRange{
-				Min:   math.MaxUint64, // Initialize Min to maximum possible value
-				Max:   0,              // Initialize Max to minimum possible value
+				Start: math.MaxUint64, // Initialize Start to maximum possible value
+				End:   0,              // Initialize End to minimum possible value
 				Chunk: blockNum,
 			}
 		}
 
 		// Update the range for this path
 		current := chunkRanges[path]
-		current.Min = uint64(math.Min(float64(current.Min), float64(blockNum)))
-		current.Max = uint64(math.Max(float64(current.Max), float64(blockNum)))
+		current.Start = uint64(math.Min(float64(current.Start), float64(blockNum)))
+		current.End = uint64(math.Max(float64(current.End), float64(blockNum)))
 		chunkRanges[path] = current
 	}
 
@@ -254,9 +254,9 @@ func (r *ChunkReader) ProcessBlockRanges() ([]ChunkRange, time.Duration) {
 		result = append(result, r)
 	}
 
-	// Sort the result slice by Min block number
+	// Sort the result slice by Start block number
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Min < result[j].Min
+		return result[i].Start < result[j].Start
 	})
 
 	elapsedTime := time.Since(startTime)

@@ -1,10 +1,9 @@
-package db
+package cardano
 
 import (
 	"os"
 	"testing"
 
-	"github.com/alexdcox/cardano-go"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 )
@@ -75,10 +74,10 @@ func TestDatabase(t *testing.T) {
 
 	// Tip
 
-	err = db.SetTip(cardano.Tip{
-		Point: cardano.Point{
+	err = db.SetTip(PointAndBlockNum{
+		Point: Point{
 			Slot: 1,
-			Hash: cardano.HexBytes("somehash"),
+			Hash: HexBytes("somehash"),
 		},
 		Block: 2,
 	})
@@ -87,6 +86,6 @@ func TestDatabase(t *testing.T) {
 	tip, err := db.GetTip()
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(1), tip.Point.Slot)
-	assert.Equal(t, cardano.HexBytes("somehash"), tip.Point.Hash)
+	assert.Equal(t, HexBytes("somehash"), tip.Point.Hash)
 	assert.Equal(t, uint64(2), tip.Block)
 }

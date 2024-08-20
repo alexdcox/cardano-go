@@ -52,8 +52,8 @@ func TestBlockCBORUnmarshal(t *testing.T) {
 		t.Fatalf("expected slot %d, got %d", expectedSlot, header.Slot)
 	}
 
-	if header.Size != expectedSize {
-		t.Fatalf("expected size %d, got %d", expectedSize, header.Size)
+	if header.BodySize != expectedSize {
+		t.Fatalf("expected size %d, got %d", expectedSize, header.BodySize)
 	}
 
 	if len(block.Data.TransactionBodies) != expectedTransactionCount {

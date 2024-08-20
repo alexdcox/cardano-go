@@ -8,13 +8,12 @@ import (
 	"syscall"
 
 	. "github.com/alexdcox/cardano-go"
-	"github.com/alexdcox/cardano-go/cli/rpc/event"
-	db2 "github.com/alexdcox/cardano-go/db"
+	"github.com/alexdcox/cardano-go/cli/rpc/shared"
 	"github.com/pkg/errors"
 )
 
 type _config struct {
-	DbPath       string `json:"dbpath"`
+	NodeDataPath string `json:"nodedatapath"`
 	NodeHostPort string `json:"nodehostport"`
 	Network      string `json:"network"`
 	// TODO: This optional parameter is needed for this client to work with custom/3p private networks
@@ -29,7 +28,7 @@ type _config struct {
 }
 
 func (c *_config) Load() (err error) {
-	flag.StringVar(&c.DbPath, "dbpath", "/opt/cardano/data", "Path to the database directory")
+	flag.StringVar(&c.NodeDataPath, "nodedatapath", "/opt/cardano/data", "Path to the node chunk directory")
 	flag.StringVar(&c.NodeHostPort, "nodehostport", "localhost:3000", "Set host:port for the http/rpc listener")
 	flag.StringVar(&c.Network, "network", "", "Set network (mainnet|preprod|privnet)")
 	flag.StringVar(&c.RpcHostPort, "rpchostport", "localhost:3001", "Set host:port for the http/rpc listener")
@@ -97,12 +96,12 @@ func main() {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	chunkReader, err := NewChunkReader(config.DbPath)
+	chunkReader, err := NewChunkReader(config.NodeDataPath)
 	if err != nil {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
 
-	db, err := db2.NewSqlLiteDatabase("cardano.db")
+	db, err := NewSqlLiteDatabase("cardano.db")
 	if err != nil {
 		log.Fatal().Msgf("%+v", errors.WithStack(err))
 	}
@@ -146,9 +145,9 @@ func main() {
 	log.Info().Msg("graceful shutdown complete")
 }
 
-func initialise(chunkReader *ChunkReader, db db2.Database, client *Client) (err error) {
-	event.ChunkUpdatesToDatabase(chunkReader, db)
+func initialise(chunkReader *ChunkReader, db Database, client *Client) (err error) {
+	shared.ChunkUpdatesToDatabase(chunkReader, db)
 	err = client.Start()
-	event.NodeUpdatesToDatabase(client, db)
+	shared.NodeUpdatesToDatabase(client, db)
 	return
 }

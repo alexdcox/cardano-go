@@ -55,7 +55,7 @@ func (s *Segment) Messages() (messages []Message, err error) {
 		}
 
 		if _, is := messageI.(*MessageStartBatch); is {
-			fmt.Println("here")
+			fmt.Println("@message start batch")
 		}
 
 		_, err = StandardCborDecoder.UnmarshalFirst(data, messageI)

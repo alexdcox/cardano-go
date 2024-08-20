@@ -1,6 +1,7 @@
 package cardano
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -212,6 +213,10 @@ func (b HexBytes) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf(`"%s"`, b)), nil
 }
 
+func (b HexBytes) Equals(o HexBytes) bool {
+	return bytes.Equal(b, o)
+}
+
 type Message interface {
 	SetSubprotocol(Subprotocol)
 	GetSubprotocol() Subprotocol
@@ -236,14 +241,26 @@ type Point struct {
 	Hash HexBytes `chor:",omitempty" json:"hash"`
 }
 
-type Tip struct {
+func (p *Point) Equals(o Point) bool {
+	return p.Slot == o.Slot && p.Hash.Equals(o.Hash)
+}
+
+func (p Point) String() string {
+	return fmt.Sprintf("slot: %d | hash: %s", p.Slot, p.Hash)
+}
+
+type PointAndBlockNum struct {
 	_     struct{} `cbor:",toarray"`
 	Point Point    `json:"point"`
 	Block uint64   `json:"block"`
 }
 
-func (t Tip) String() string {
-	return fmt.Sprintf("%d/%d/%x", t.Block, t.Point.Slot, t.Point.Hash)
+func (t PointAndBlockNum) Equals(o PointAndBlockNum) bool {
+	return t.Point.Equals(o.Point) && t.Block == o.Block
+}
+
+func (t PointAndBlockNum) String() string {
+	return fmt.Sprintf("number: %d | %s", t.Block, t.Point)
 }
 
 type HasSubtypes interface {
@@ -297,7 +314,7 @@ func (o *Optional[T]) UnmarshalCBOR(data []byte) error {
 
 func (f Optional[T]) MarshalCBOR() (out []byte, err error) {
 	if !f.Valid || f.Value == nil {
-		return []byte("[]"), nil
+		return cbor.Marshal([]any{})
 	}
 	out, err = cbor.Marshal(*f.Value)
 	err = errors.WithStack(err)

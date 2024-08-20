@@ -1,28 +1,11 @@
-package db
+package cardano
 
 import (
 	"database/sql"
 	"sync"
 
-	"github.com/alexdcox/cardano-go"
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 )
-
-type Database interface {
-	SetChunkRange(chunk, start, end uint64) (err error)
-	GetChunkRange(number uint64) (start, end uint64, chunk uint64, err error)
-	GetChunkSpan() (first, last uint64, err error)
-
-	AddTxsForBlock(txhashes []string, blockNumber uint64) (err error)
-	GetBlockForTx(txhash string) (blockNumber uint64, err error)
-
-	SetTip(tip cardano.Tip) error
-	GetTip() (cardano.Tip, error)
-
-	AddBlockPoint(number uint64, point cardano.Point) (err error)
-	GetBlockPoint(number uint64) (point cardano.Point, err error)
-}
 
 type SqlLiteDatabase struct {
 	db *sql.DB
@@ -32,6 +15,8 @@ type SqlLiteDatabase struct {
 var _ Database = &SqlLiteDatabase{}
 
 func NewSqlLiteDatabase(path string) (db *SqlLiteDatabase, err error) {
+	log.Info().Msgf("opening sqlite db at: '%s'", path)
+
 	sqldb, err := sql.Open("sqlite3", path)
 	if err != nil {
 		err = errors.Wrap(err, "failed to open database")
@@ -194,7 +179,7 @@ func (s *SqlLiteDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, err 
 	return
 }
 
-func (s *SqlLiteDatabase) SetTip(tip cardano.Tip) error {
+func (s *SqlLiteDatabase) SetTip(tip PointAndBlockNum) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -212,7 +197,7 @@ func (s *SqlLiteDatabase) SetTip(tip cardano.Tip) error {
 	_, err = tx.Exec(`
         INSERT INTO tip (slot, hash, number)
         VALUES (?, ?, ?)`,
-		tip.Point.Slot, tip.Point.Hash, tip.Block)
+		tip.Point.Slot, tip.Point.Hash.String(), tip.Block)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -221,30 +206,37 @@ func (s *SqlLiteDatabase) SetTip(tip cardano.Tip) error {
 	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetTip() (cardano.Tip, error) {
+func (s *SqlLiteDatabase) GetTip() (tip PointAndBlockNum, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var tip cardano.Tip
-	err := s.db.QueryRow(`
+	var hash string
+	err = s.db.QueryRow(`
         SELECT slot, hash, number
         FROM tip
-        LIMIT 1`).Scan(&tip.Point.Slot, &tip.Point.Hash, &tip.Block)
-
+        LIMIT 1`).Scan(&tip.Point.Slot, &hash, &tip.Block)
 	if err == sql.ErrNoRows {
-		return cardano.Tip{
-			Point: cardano.Point{
+		tip = PointAndBlockNum{
+			Point: Point{
 				Slot: 0,
-				Hash: make(cardano.HexBytes, 32),
+				Hash: make(HexBytes, 32),
 			},
 			Block: 0,
-		}, nil
+		}
+		err = nil
+		return
 	}
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	tip.Point.Hash = HexString(hash).Bytes()
 
 	return tip, errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) AddBlockPoint(number uint64, point cardano.Point) (err error) {
+func (s *SqlLiteDatabase) AddBlockPoint(number uint64, point Point) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -255,7 +247,7 @@ func (s *SqlLiteDatabase) AddBlockPoint(number uint64, point cardano.Point) (err
 	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetBlockPoint(number uint64) (point cardano.Point, err error) {
+func (s *SqlLiteDatabase) GetBlockPoint(number uint64) (point Point, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

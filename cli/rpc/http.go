@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,13 +10,25 @@ import (
 	. "github.com/alexdcox/cardano-go"
 	"github.com/alexdcox/cardano-go/rpcclient"
 	"github.com/fxamacker/cbor/v2"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/pkg/errors"
 	"github.com/tidwall/gjson"
 )
 
-func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db Database, client *Client) (server *HttpRpcServer, err error) {
+func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db Database) (server *HttpRpcServer, err error) {
+
+	// The http rpc server has a separate node connection for fetching blocks:
+
+	client, err := NewClient(&ClientOptions{
+		HostPort:      config.NodeHostPort,
+		Network:       Network(config.Network),
+		NoFollowChain: true,
+	})
+	if err != nil {
+		return
+	}
+
 	server = &HttpRpcServer{
 		config:      config,
 		client:      client,
@@ -29,7 +40,7 @@ func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db Database, cl
 }
 
 type HttpRpcServer struct {
-	echo        *echo.Echo
+	app         *fiber.App
 	client      *Client
 	chunkReader *ChunkReader
 	config      *_config
@@ -37,63 +48,61 @@ type HttpRpcServer struct {
 }
 
 func (s *HttpRpcServer) Start() (err error) {
-	// TODO: Uncomment && move higher
-	// err = s.client.Start()
-	// if err != nil {
-	// 	return
-	// }
+	err = s.client.Start()
+	if err != nil {
+		return
+	}
 
-	s.echo = echo.New()
-	s.echo.HideBanner = true
-	s.echo.HidePort = true
-	s.echo.Debug = true
-	s.echo.Server.ReadTimeout = 30 * time.Second
-	s.echo.Server.WriteTimeout = 30 * time.Second
-	s.echo.Server.IdleTimeout = 120 * time.Second
-	s.echo.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
-		LogStatus: true, LogRemoteIP: true, LogMethod: true, LogURIPath: true,
-		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) (err error) {
-			log.Info().Msgf("[%d] %s - %s %s", v.Status, v.RemoteIP, v.Method, v.URIPath)
-			return
-		},
-	}))
-	s.echo.Use(middleware.Recover())
-	s.echo.GET("/utxo/:address", s.getUtxoForAddress)
-	s.echo.GET("/block/latest", s.getLatestBlock)
-	s.echo.GET("/block/:number", s.getBlock)
-	s.echo.POST("/broadcast", s.postBroadcast)
-	s.echo.GET("/status", s.getStatus)
-	s.echo.GET("/tip", s.getTip)
-	s.echo.POST("/cli", s.postCli)
+	s.app = fiber.New(fiber.Config{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	})
+	s.app.Use(recover.New())
+	s.app.Use(func(c *fiber.Ctx) error {
+		log.Info().Msgf("[%d] %s - %s %s", c.Response().StatusCode(), c.IP(), c.Method(), c.Path())
+		return c.Next()
+	})
+
+	s.app.Get("/utxo/:address", s.getUtxoForAddress)
+	s.app.Get("/block/latest", s.getLatestBlock)
+	s.app.Get("/block/:number", s.getBlock)
+	s.app.Post("/broadcast", s.postBroadcast)
+	s.app.Get("/status", s.getStatus)
+	s.app.Get("/tip", s.getTip)
+	s.app.Post("/cli", s.postCli)
 
 	log.Info().Msgf("server listening on %s", config.RpcHostPort)
 
-	err = errors.WithStack(s.echo.Start(config.RpcHostPort))
+	err = errors.WithStack(s.app.Listen(config.RpcHostPort))
 
 	return
 }
 
 func (s *HttpRpcServer) Stop() (err error) {
+	if err = s.app.Shutdown(); err != nil {
+		return err
+	}
 	return s.client.Stop()
 }
 
-func (s *HttpRpcServer) getStatus(c echo.Context) error {
-	return c.JSON(http.StatusOK, map[string]any{
+func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
+	return c.JSON(map[string]any{
 		"db":     s.chunkReader.Status,
 		"config": s.config,
 	})
 }
 
-func (s *HttpRpcServer) getUtxoForAddress(c echo.Context) error {
+func (s *HttpRpcServer) getUtxoForAddress(c *fiber.Ctx) error {
 	addr := &Address{}
-	if err := addr.ParseBech32String(c.Param("address"), Network(config.Network)); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
+	if err := addr.ParseBech32String(c.Params("address"), Network(config.Network)); err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 			"error": "address invalid",
 		})
 	}
 	output, err := runCommandWithVirtualFiles(
 		"/usr/local/bin/cardano-cli",
-		"query utxo --out-file /dev/stdout --address "+c.Param("address"),
+		"query utxo --out-file /dev/stdout --address "+c.Params("address"),
 		[]string{
 			fmt.Sprintf("CARDANO_NODE_NETWORK_ID=%d", config.Cardano.ShelleyConfig.NetworkMagic),
 			"CARDANO_NODE_SOCKET_PATH=" + config.SocketPath,
@@ -102,7 +111,7 @@ func (s *HttpRpcServer) getUtxoForAddress(c echo.Context) error {
 	)
 
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 			"output": string(output),
 			"error":  fmt.Sprintf("%+v", err),
 		})
@@ -110,7 +119,7 @@ func (s *HttpRpcServer) getUtxoForAddress(c echo.Context) error {
 
 	jsn := gjson.ParseBytes(output)
 	if !jsn.IsObject() {
-		return c.Blob(http.StatusOK, "text/plain", output)
+		return c.Status(http.StatusOK).SendString(string(output))
 	}
 
 	formattedOutout := []any{}
@@ -123,68 +132,56 @@ func (s *HttpRpcServer) getUtxoForAddress(c echo.Context) error {
 		return true
 	})
 
-	return c.JSON(http.StatusOK, formattedOutout)
+	return c.JSON(formattedOutout)
 }
 
-func (s *HttpRpcServer) getLatestBlock(c echo.Context) error {
-	// TODO: This needs to use the http rpc client not create a new one
-
-	client, err := NewClient(&ClientOptions{
-		HostPort: "localhost:3000",
-		Network:  NetworkPrivateNet,
-	})
+func (s *HttpRpcServer) getLatestBlock(c *fiber.Ctx) error {
+	block, err := s.client.FetchLatestBlock()
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, err)
+		return c.Status(http.StatusInternalServerError).JSON(err)
 	}
 
-	err = client.Start()
-	defer client.Stop()
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, err)
-	}
-
-	block, err := client.FetchLatestBlock()
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, err)
-	}
-
-	return c.JSON(http.StatusOK, block)
+	return c.JSON(block)
 }
 
-func (s *HttpRpcServer) getBlock(c echo.Context) error {
-	blockNumberStr := c.Param("number")
+func (s *HttpRpcServer) getBlock(c *fiber.Ctx) error {
+	blockNumberStr := c.Params("number")
 	blockNumber, err := strconv.Atoi(blockNumberStr)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid block number"})
+		return c.Status(http.StatusBadRequest).JSON(map[string]string{"error": "invalid block number"})
 	}
 
 	returnBlock := func(block *Block) error {
-		if c.Request().Header.Get("Content-Type") == "application/hex" {
+		if c.Get("Content-Type") == "application/hex" {
 			blockBytes, _ := cbor.Marshal(block)
-			return c.String(http.StatusOK, fmt.Sprintf("%x", blockBytes))
+			return c.SendString(fmt.Sprintf("%x", blockBytes))
 		}
-		if c.Request().Header.Get("Content-Type") == "application/cbor" {
-			blockBytes, _ := cbor.Marshal(block)
-			return c.Blob(http.StatusOK, "application/cbor", blockBytes)
+		if c.Get("Content-Type") == "application/cbor" {
+			return c.Send(block.Raw)
 		}
-		return c.JSON(http.StatusOK, block)
+		return c.JSON(block)
 	}
+
+	// Try to fetch from the node chunk directory first
 
 	if block, err2 := s.chunkReader.GetBlock(uint64(blockNumber)); err2 == nil {
 		return returnBlock(block)
 	}
 
-	// TODO: client.GetBlock
-	// if block, err2 := s.client.GetBlock(int64(blockNumber)); err2 == nil {
-	// 	return returnBlock(block)
-	// }
+	// If not yet written to disk, fetch the block from the node
 
-	return c.JSON(http.StatusNotFound, map[string]any{
+	if point, err2 := s.db.GetBlockPoint(uint64(blockNumber)); err2 == nil {
+		if block, err3 := s.client.FetchBlock(point); err3 == nil {
+			return returnBlock(block)
+		}
+	}
+
+	return c.Status(http.StatusNotFound).JSON(map[string]any{
 		"error": ErrBlockNotFound,
 	})
 }
 
-func (s *HttpRpcServer) getTip(c echo.Context) error {
+func (s *HttpRpcServer) getTip(c *fiber.Ctx) error {
 	output, err := runCommandWithVirtualFiles(
 		"/usr/local/bin/cardano-cli",
 		"query tip",
@@ -196,7 +193,7 @@ func (s *HttpRpcServer) getTip(c echo.Context) error {
 	)
 
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 			"output": string(output),
 			"error":  fmt.Sprintf("%+v", err),
 		})
@@ -207,10 +204,12 @@ func (s *HttpRpcServer) getTip(c echo.Context) error {
 		mime = "application/json"
 	}
 
-	return c.Blob(http.StatusOK, mime, output)
+	c.Type(mime)
+
+	return c.Send(output)
 }
 
-func (s *HttpRpcServer) postBroadcast(c echo.Context) error {
+func (s *HttpRpcServer) postBroadcast(c *fiber.Ctx) error {
 	var req rpcclient.BroadcastRawTxIn
 	if err := s.unmarshalJson(c, &req); err != nil {
 		return err
@@ -238,7 +237,7 @@ func (s *HttpRpcServer) postBroadcast(c echo.Context) error {
 	)
 
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 			"output": string(output),
 			"error":  fmt.Sprintf("%+v", err),
 		})
@@ -249,24 +248,19 @@ func (s *HttpRpcServer) postBroadcast(c echo.Context) error {
 		mime = "application/json"
 	}
 
-	return c.Blob(http.StatusOK, mime, output)
+	c.Type(mime)
+
+	return c.Send(output)
 }
 
-func (s *HttpRpcServer) unmarshalJson(c echo.Context, target any) (err error) {
-	if c.Request().Header.Get("Content-Type") != "application/json" {
-		return c.NoContent(http.StatusBadRequest)
+func (s *HttpRpcServer) unmarshalJson(c *fiber.Ctx, target any) (err error) {
+	if c.Get("Content-Type") != "application/json" {
+		return c.SendStatus(http.StatusBadRequest)
 	}
 
-	bodyBytes, err := io.ReadAll(c.Request().Body)
+	err = c.BodyParser(target)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
-			"error": fmt.Sprintf("%+v", err),
-		})
-	}
-
-	err = json.Unmarshal(bodyBytes, target)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 			"error": fmt.Sprintf("%+v", err),
 		})
 	}
@@ -274,7 +268,7 @@ func (s *HttpRpcServer) unmarshalJson(c echo.Context, target any) (err error) {
 	return
 }
 
-func (s *HttpRpcServer) postCli(c echo.Context) error {
+func (s *HttpRpcServer) postCli(c *fiber.Ctx) error {
 	var data InputData
 	if err := s.unmarshalJson(c, &data); err != nil {
 		return err
@@ -295,7 +289,7 @@ func (s *HttpRpcServer) postCli(c echo.Context) error {
 		virtualFiles,
 	)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]any{
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 			"output": string(output),
 			"error":  fmt.Sprintf("%+v", err),
 		})
@@ -306,5 +300,7 @@ func (s *HttpRpcServer) postCli(c echo.Context) error {
 		mime = "application/json"
 	}
 
-	return c.Blob(http.StatusOK, mime, output)
+	c.Type(mime)
+
+	return c.Send(output)
 }

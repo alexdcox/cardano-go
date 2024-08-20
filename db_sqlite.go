@@ -179,6 +179,23 @@ func (s *SqlLiteDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, err 
 	return
 }
 
+func (s *SqlLiteDatabase) GetBlockSpan() (lowestBlock, highestBlock uint64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `
+		SELECT 
+			COALESCE(MIN(start), 0) as lowest_block,
+			COALESCE(MAX(end), 0) as highest_block
+		FROM chunks
+	`
+
+	err = s.db.QueryRow(query).Scan(&lowestBlock, &highestBlock)
+	err = errors.WithStack(err)
+
+	return
+}
+
 func (s *SqlLiteDatabase) SetTip(tip PointAndBlockNum) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

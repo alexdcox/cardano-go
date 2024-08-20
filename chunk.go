@@ -270,7 +270,7 @@ func (r *ChunkReader) GetChunkedBlock(number uint64) (block *ChunkedBlock, err e
 				return b, nil
 			}
 		}
-		return nil, errors.WithStack(ErrChunkBlockMissing)
+		return nil, errors.Wrapf(ErrChunkBlockMissing, "requested chunk: %s", chunk.ChunkPath)
 	}
 
 	if cachedChunk, ok := r.cache.Get(number); ok {
@@ -286,7 +286,7 @@ func (r *ChunkReader) GetChunkedBlock(number uint64) (block *ChunkedBlock, err e
 		return findBlockInChunk(chunk)
 	}
 
-	return nil, errors.WithStack(ErrBlockNotFound)
+	return nil, errors.Wrapf(ErrBlockNotFound, "requested block: %d", number)
 }
 
 func (r *ChunkReader) GetBlock(number uint64) (block *Block, err error) {

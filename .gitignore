@@ -3,3 +3,4 @@ rpc
 _*/
 latest-tip.json
 cardano.db
+cardano.db-journal

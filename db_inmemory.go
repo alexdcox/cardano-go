@@ -87,16 +87,36 @@ func (db *InMemoryDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, er
 		return 0, 0, nil
 	}
 
-	for chunk := range db.chunks {
-		if chunk < lowestChunk || lowestChunk == 0 {
-			lowestChunk = chunk
+	for _, chunk := range db.chunks {
+		if chunk.Chunk < lowestChunk || lowestChunk == 0 {
+			lowestChunk = chunk.Chunk
 		}
-		if chunk > highestChunk {
-			highestChunk = chunk
+		if chunk.Chunk > highestChunk {
+			highestChunk = chunk.Chunk
 		}
 	}
 
 	return lowestChunk, highestChunk, nil
+}
+
+func (db *InMemoryDatabase) GetBlockSpan() (lowestBlock, highestBlock uint64, err error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if len(db.chunks) == 0 {
+		return 0, 0, nil
+	}
+
+	for _, chunk := range db.chunks {
+		if chunk.Start < lowestBlock || lowestBlock == 0 {
+			lowestBlock = chunk.Start
+		}
+		if chunk.End > highestBlock {
+			highestBlock = chunk.End
+		}
+	}
+
+	return lowestBlock, highestBlock, nil
 }
 
 func (db *InMemoryDatabase) SetTip(tip PointAndBlockNum) error {

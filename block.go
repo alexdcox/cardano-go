@@ -23,6 +23,46 @@ type Block struct {
 		AuxiliaryData          AuxData                 `json:"auxiliaryData"`
 		InvalidTransactions    []uint64                `json:"invalidTransactions"`
 	} `json:"data"`
+	Raw []byte `cbor:"-" json:"-"`
+}
+
+func (b *Block) PointAndNumber() (pn PointAndBlockNum, err error) {
+	point, err := b.Point()
+	if err != nil {
+		return
+	}
+	pn = PointAndBlockNum{
+		Point: point,
+		Block: b.Data.Header.Body.Number,
+	}
+	return
+}
+
+func (b *Block) Point() (point Point, err error) {
+	hash, err := b.Hash()
+	if err != nil {
+		return
+	}
+
+	point = Point{
+		Slot: b.Data.Header.Body.Slot,
+		Hash: hash,
+	}
+
+	return
+}
+
+func (b *Block) Hash() (hash HexBytes, err error) {
+	headerCbor, err := cbor.Marshal(b.Data.Header)
+	if err != nil {
+		err = errors.Wrap(err, "failed to marshal header when calculating block hash")
+		return
+	}
+
+	h := blake2b.Sum256(headerCbor)
+	hash = h[:]
+
+	return
 }
 
 type AuxData struct {
@@ -397,7 +437,7 @@ type VrfCert struct {
 	Pt2 HexBytes `json:"pt2"`
 }
 
-type BlockWithPosition struct {
+type WrappedBlock struct {
 	Block  Block
 	Number uint64
 	Point  Point

@@ -15,10 +15,11 @@ import (
 )
 
 type ClientOptions struct {
-	HostPort    string
-	Network     Network
-	Database    Database
-	TipOverride *PointAndBlockNum
+	HostPort      string
+	Network       Network
+	Database      Database
+	TipOverride   *PointAndBlockNum
+	NoFollowChain bool
 }
 
 func (o *ClientOptions) setDefaults() {
@@ -117,7 +118,9 @@ func (c *Client) Start() (err error) {
 		c.tip = tip
 	}
 
-	go c.followChain()
+	if !c.options.NoFollowChain {
+		go c.followChain()
+	}
 
 	return
 }
@@ -208,7 +211,7 @@ func (c *Client) followChain() {
 			}
 
 			c.log.Info().Msgf("roll forward: %s", c.tip)
-			c.pubsub.Broadcast(BlockWithPosition{
+			c.pubsub.Broadcast(WrappedBlock{
 				Block:  *block,
 				Number: nextTip.Block,
 				Point:  nextTip.Point,
@@ -304,7 +307,7 @@ func (c *Client) beginReadStream(wg *sync.WaitGroup) {
 			return
 		}
 		for _, message := range messages {
-			c.log.Info().Msgf("message in: %T", message)
+			c.log.Debug().Msgf("message in: %T", message)
 			c.pubsub.Broadcast(message)
 		}
 	}
@@ -370,7 +373,7 @@ func (c *Client) SendSegment(segment *Segment) (err error) {
 
 	for _, msg := range segment.messages {
 		if segment.Protocol != ProtocolKeepAlive {
-			c.log.Info().Msgf(
+			c.log.Debug().Msgf(
 				"message out: %T, protocol: %d, subprotocol: %d",
 				msg,
 				segment.Protocol,
@@ -496,6 +499,7 @@ func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
 				return
 			}
 			mu.Lock()
+			block.Raw = msg.BlockData
 			blocks = append(blocks, block)
 			mu.Unlock()
 			return

@@ -91,43 +91,63 @@ var config *_config
 func main() {
 	config = &_config{}
 
-	err := config.Load()
-	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	if err := config.Load(); err != nil {
+		log.Fatal().Msgf("%+v", err)
 	}
 
 	chunkReader, err := NewChunkReader(config.NodeDataPath)
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		log.Fatal().Msgf("%+v", err)
 	}
 
 	db, err := NewSqlLiteDatabase("cardano.db")
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		log.Fatal().Msgf("%+v", err)
+	}
+
+	shared.ChunkUpdatesToDatabase(chunkReader, db)
+
+	firstChunkedBlock, lastChunkedBlock, err := db.GetBlockSpan()
+	if err != nil {
+		log.Fatal().Msgf("%+v", err)
+	}
+
+	log.Info().Msgf("chunked blocks range from %d to %d", firstChunkedBlock, lastChunkedBlock)
+
+	block, err := chunkReader.GetBlock(lastChunkedBlock)
+	if err != nil {
+		log.Fatal().Msgf("%+v", err)
+	}
+
+	pointNum, err := block.PointAndNumber()
+	if err != nil {
+		log.Fatal().Msgf("%+v", err)
 	}
 
 	client, err := NewClient(&ClientOptions{
-		HostPort: config.NodeHostPort,
-		Network:  Network(config.Network),
-		TipStore: db,
+		HostPort:    config.NodeHostPort,
+		Network:     Network(config.Network),
+		Database:    db,
+		TipOverride: &pointNum,
 	})
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		log.Fatal().Msgf("%+v", err)
 	}
 
-	if err = initialise(chunkReader, db, client); err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	shared.NodeUpdatesToDatabase(client, db)
+
+	if err = client.Start(); err != nil {
+		log.Fatal().Msgf("%+v", err)
 	}
 
-	httpServer, err := NewHttpRpcServer(config, chunkReader, db, client)
+	httpServer, err := NewHttpRpcServer(config, chunkReader, db)
 	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+		log.Fatal().Msgf("%+v", err)
 	}
 
 	go func() {
-		err = httpServer.Start()
-		if err != nil {
-			log.Error().Msgf("%+v", errors.WithStack(err))
+		if err = httpServer.Start(); err != nil {
+			log.Fatal().Msgf("%+v", err)
 		}
 	}()
 
@@ -137,17 +157,9 @@ func main() {
 
 	log.Info().Msg("caught interrupt/terminate signal, attempting graceful shutdown...")
 
-	err = httpServer.Stop()
-	if err != nil {
-		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	if err = httpServer.Stop(); err != nil {
+		log.Fatal().Msgf("%+v", err)
 	}
 
 	log.Info().Msg("graceful shutdown complete")
-}
-
-func initialise(chunkReader *ChunkReader, db Database, client *Client) (err error) {
-	shared.ChunkUpdatesToDatabase(chunkReader, db)
-	err = client.Start()
-	shared.NodeUpdatesToDatabase(client, db)
-	return
 }

@@ -126,7 +126,7 @@ func main() {
 	var clientStartPoint PointAndBlockNum
 
 	if firstBlockPoint <= lastChunkedBlock+1 {
-		log.Info().Msg("chunks overlap c2n recorded points, continuing from c2n tip")
+		log.Info().Msg("chunks overlap client recorded points, continuing from client tip")
 
 		clientStartPoint, err = db.GetBlockPoint(lastBlockPoint)
 		if err != nil {

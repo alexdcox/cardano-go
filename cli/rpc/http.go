@@ -89,10 +89,35 @@ func (s *HttpRpcServer) Stop() (err error) {
 	return s.fetchClient.Stop()
 }
 
+func (s *HttpRpcServer) errorStringResponse(c *fiber.Ctx, error string) error {
+	return c.Status(http.StatusInternalServerError).JSON(map[string]any{"error": error})
+}
+
+func (s *HttpRpcServer) errorResponse(c *fiber.Ctx, err error) error {
+	return s.errorStringResponse(c, fmt.Sprintf("%+v", err))
+}
+
 func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
+	firstChunkedBlock, lastChunkedBlock, err := s.db.GetChunkedBlockSpan()
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	firstBlockPoint, lastBlockPoint, err := s.db.GetPointSpan()
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
 	return c.JSON(map[string]any{
-		"chunks": s.chunkReader.Status,
-		"node":   s.followClient.GetTip(),
+		"chunks": map[string]any{
+			"firstBlock": firstChunkedBlock,
+			"lastBlock":  lastChunkedBlock,
+		},
+		"client": map[string]any{
+			"firstBlock": firstBlockPoint,
+			"lastBlock":  lastBlockPoint,
+			"tip":        s.followClient.GetTip(),
+		},
 		"config": s.config,
 	})
 }
@@ -100,10 +125,9 @@ func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 func (s *HttpRpcServer) getUtxoForAddress(c *fiber.Ctx) error {
 	addr := &Address{}
 	if err := addr.ParseBech32String(c.Params("address"), Network(config.Network)); err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
-			"error": "address invalid",
-		})
+		return s.errorResponse(c, err)
 	}
+
 	output, err := runCommandWithVirtualFiles(
 		"/usr/local/bin/cardano-cli",
 		"query utxo --out-file /dev/stdout --address "+c.Params("address"),
@@ -142,7 +166,7 @@ func (s *HttpRpcServer) getUtxoForAddress(c *fiber.Ctx) error {
 func (s *HttpRpcServer) getLatestBlock(c *fiber.Ctx) error {
 	block, err := s.fetchClient.FetchLatestBlock()
 	if err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(err)
+		return s.errorResponse(c, err)
 	}
 
 	return c.JSON(block)
@@ -152,7 +176,7 @@ func (s *HttpRpcServer) getBlock(c *fiber.Ctx) error {
 	blockNumberStr := c.Params("number")
 	blockNumber, err := strconv.Atoi(blockNumberStr)
 	if err != nil {
-		return c.Status(http.StatusBadRequest).JSON(map[string]string{"error": "invalid block number"})
+		return s.errorResponse(c, err)
 	}
 
 	returnBlock := func(block *Block) error {
@@ -180,9 +204,7 @@ func (s *HttpRpcServer) getBlock(c *fiber.Ctx) error {
 		}
 	}
 
-	return c.Status(http.StatusNotFound).JSON(map[string]any{
-		"error": ErrBlockNotFound,
-	})
+	return s.errorResponse(c, errors.WithStack(ErrBlockNotFound))
 }
 
 func (s *HttpRpcServer) getTip(c *fiber.Ctx) error {
@@ -238,20 +260,13 @@ func (s *HttpRpcServer) unmarshalJson(c *fiber.Ctx, target any) (err error) {
 		return c.SendStatus(http.StatusBadRequest)
 	}
 
-	err = c.BodyParser(target)
-	if err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
-			"error": fmt.Sprintf("%+v", err),
-		})
-	}
-
-	return
+	return c.BodyParser(target)
 }
 
 func (s *HttpRpcServer) postCli(c *fiber.Ctx) error {
 	var data InputData
 	if err := s.unmarshalJson(c, &data); err != nil {
-		return err
+		return s.errorResponse(c, err)
 	}
 
 	virtualFiles := []VirtualFile{}

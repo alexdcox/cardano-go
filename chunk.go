@@ -28,16 +28,6 @@ func NewChunkReader(dir string, db Database) (reader *ChunkReader, err error) {
 	return
 }
 
-type ChunkReaderStatus struct {
-	FirstBlock       uint64        `json:"firstBlock"`
-	LastBlock        uint64        `json:"lastBlock"`
-	TimeToStart      time.Duration `json:"timeToStart,string"`
-	Started          time.Time     `json:"started"`
-	FirstChunkNumber uint64        `json:"firstChunkNumber"`
-	LastChunkNumber  uint64        `json:"lastChunkNumber"`
-	LastChunkTime    time.Time     `json:"lastChunkTime"`
-}
-
 type Chunk struct {
 	FirstBlock      uint64
 	LastBlock       uint64
@@ -45,13 +35,9 @@ type Chunk struct {
 	ChunkPath       string
 }
 
-// TODO: Refactor this!
-const FirstConwayChunk = 3348
-
 type ChunkReader struct {
 	dir          string
 	immutableDir string
-	Status       ChunkReaderStatus
 	cache        *ChunkCache
 	db           Database
 }
@@ -84,9 +70,7 @@ func (r *ChunkReader) Start() (err error) {
 }
 
 func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
-	r.Status.Started = time.Now().UTC()
-
-	log.Info().Msg("locating chunk files...")
+	log.Info().Msgf("locating chunk files from chunk %d...", skipUntilNumber)
 
 	var initialChunkFiles []string
 	err = filepath.Walk(r.immutableDir, func(path string, info os.FileInfo, err error) error {
@@ -112,6 +96,9 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 		firstNumber,
 		lastNumber,
 	)
+
+	// TODO: Remove this!
+	const FirstConwayChunk = 3348
 
 	var chunks []*Chunk
 	for i, chunkFile := range initialChunkFiles {
@@ -185,16 +172,14 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 		)
 	}
 
-	r.Status.TimeToStart = time.Now().UTC().Sub(r.Status.Started)
-	p := message.NewPrinter(language.English)
-
 	firstBlock, lastBlock, err := r.db.GetChunkedBlockSpan()
 	if err != nil {
 		return
 	}
 	blockRange := lastBlock - firstBlock
 
-	log.Info().Msgf("loaded %s blocks in %s", p.Sprintf("%d", blockRange), r.Status.TimeToStart.String())
+	p := message.NewPrinter(language.English)
+	log.Info().Msgf("found %s chunked blocks in database", p.Sprintf("%d", blockRange))
 
 	return
 }
@@ -335,11 +320,6 @@ func (r *ChunkReader) processChunkFile(chunkPath string, firstBlockOnly bool) (c
 		return
 	}
 
-	number, err := r.chunkFileNumber(chunkPath)
-	if err != nil {
-		return
-	}
-
 	data, err := os.ReadFile(chunkPath)
 	if err != nil {
 		err = errors.Wrap(err, "error reading chunk file")
@@ -352,23 +332,6 @@ func (r *ChunkReader) processChunkFile(chunkPath string, firstBlockOnly bool) (c
 	}
 
 	c.ChunkPath = chunkPath
-
-	if r.Status.FirstChunkNumber == 0 || number < r.Status.FirstChunkNumber {
-		r.Status.FirstChunkNumber = number
-	}
-
-	if r.Status.FirstBlock == 0 || c.FirstBlock < r.Status.FirstBlock {
-		r.Status.FirstBlock = c.FirstBlock
-	}
-
-	if c.LastBlock > r.Status.LastBlock {
-		r.Status.LastBlock = c.LastBlock
-	}
-
-	if number > r.Status.LastChunkNumber {
-		r.Status.LastChunkNumber = number
-		r.Status.LastChunkTime = time.Now().UTC()
-	}
 
 	return
 }

@@ -57,7 +57,7 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 		return
 	}
 
-	clientLog := LogAtLevel(options.LogLevel)
+	clientLog := LogAtLevel(zerolog.NoLevel)
 
 	client = &Client{
 		options: options,

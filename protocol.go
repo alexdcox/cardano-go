@@ -241,6 +241,13 @@ type Point struct {
 	Hash HexBytes `chor:",omitempty" json:"hash"`
 }
 
+func NewPoint() Point {
+	return Point{
+		Slot: 0,
+		Hash: make([]byte, 32),
+	}
+}
+
 func (p *Point) Equals(o Point) bool {
 	return p.Slot == o.Slot && p.Hash.Equals(o.Hash)
 }

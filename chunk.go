@@ -1,12 +1,11 @@
 package cardano
 
 import (
-	"math"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,12 +17,12 @@ import (
 	"golang.org/x/text/message"
 )
 
-func NewChunkReader(dir string) (reader *ChunkReader, err error) {
+func NewChunkReader(dir string, db Database) (reader *ChunkReader, err error) {
 	reader = &ChunkReader{
-		dir:           dir,
-		immutableDir:  path.Join(dir, "./immutable/"),
-		numberPathMap: make(map[uint64]*string),
-		cache:         NewChunkCache(time.Second * 30),
+		dir:          dir,
+		immutableDir: path.Join(dir, "./immutable/"),
+		db:           db,
+		cache:        NewChunkCache(time.Second * 30),
 	}
 
 	return
@@ -50,11 +49,11 @@ type Chunk struct {
 const FirstConwayChunk = 3348
 
 type ChunkReader struct {
-	dir           string
-	immutableDir  string
-	numberPathMap map[uint64]*string // block number -> chunk file path
-	Status        ChunkReaderStatus
-	cache         *ChunkCache
+	dir          string
+	immutableDir string
+	Status       ChunkReaderStatus
+	cache        *ChunkCache
+	db           Database
 }
 
 type ChunkedBlock struct {
@@ -62,10 +61,33 @@ type ChunkedBlock struct {
 	data  []byte
 }
 
+func (r *ChunkReader) Start() (err error) {
+	_, lastSavedChunk, err := r.db.GetChunkSpan()
+	if err != nil {
+		return
+	}
+
+	r.WaitForReady()
+
+	err = r.LoadChunkFiles(lastSavedChunk)
+	if err != nil {
+		return
+	}
+
+	go func() {
+		if err := r.WatchChunkFiles(); err != nil {
+			log.Fatal().Msgf("error while watching chunk files: %+v", err)
+		}
+	}()
+
+	return
+}
+
 func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 	r.Status.Started = time.Now().UTC()
 
-	log.Info().Msg("initiating block reporter, reading all chunk files...")
+	log.Info().Msg("locating chunk files...")
+
 	var initialChunkFiles []string
 	err = filepath.Walk(r.immutableDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -118,44 +140,75 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 			continue
 		}
 		if i2 == len(initialChunkFiles)-1 {
-			for x := chunks[i2].FirstBlock; x <= chunks[i2].LastBlock; x++ {
-				r.numberPathMap[x] = &chunks[i2].ChunkPath
-			}
+			// TODO: Do we need to save tx hashes?
+
 			chunks[i2].BlockContainers = []*ChunkedBlock{}
+
+			chunkNumber := number - 1
+			firstBlock := chunks[i2].FirstBlock
+			lastBlock := chunks[i2].LastBlock - 1
+			blockRange := chunks[i2].LastBlock - chunks[i2].FirstBlock
+
+			err = r.db.SetChunkRange(chunkNumber, firstBlock, lastBlock)
+			if err != nil {
+				return
+			}
+
 			log.Info().Msgf(
 				"loaded chunk %d, block range %d to %d (%d blocks)",
-				number-1,
-				chunks[i2].FirstBlock,
-				chunks[i2].LastBlock-1,
-				chunks[i2].LastBlock-chunks[i2].FirstBlock,
+				chunkNumber,
+				firstBlock,
+				lastBlock,
+				blockRange,
 			)
 			break
 		}
-		for x := chunks[i2-1].FirstBlock; x < chunks[i2].FirstBlock; x++ {
-			r.numberPathMap[x] = &chunks[i2-1].ChunkPath
+
+		// TODO: Same question as above: save tx hashes here?
+
+		chunkNumber := number - 1
+		firstBlock := chunks[i2-1].FirstBlock
+		lastBlock := chunks[i2].FirstBlock - 1
+		blockRange := chunks[i2].FirstBlock - chunks[i2-1].FirstBlock
+
+		err = r.db.SetChunkRange(chunkNumber, firstBlock, lastBlock)
+		if err != nil {
+			return
 		}
+
 		log.Info().Msgf(
 			"loaded chunk %d, block range %d to %d (%d blocks)",
-			number-1,
-			chunks[i2-1].FirstBlock,
-			chunks[i2].FirstBlock-1,
-			chunks[i2].FirstBlock-chunks[i2-1].FirstBlock,
+			chunkNumber,
+			firstBlock,
+			lastBlock,
+			blockRange,
 		)
 	}
 
 	r.Status.TimeToStart = time.Now().UTC().Sub(r.Status.Started)
 	p := message.NewPrinter(language.English)
-	log.Info().Msgf("loaded %s blocks in %s", p.Sprintf("%d", len(r.numberPathMap)), r.Status.TimeToStart.String())
+
+	firstBlock, lastBlock, err := r.db.GetChunkedBlockSpan()
+	if err != nil {
+		return
+	}
+	blockRange := lastBlock - firstBlock
+
+	log.Info().Msgf("loaded %s blocks in %s", p.Sprintf("%d", blockRange), r.Status.TimeToStart.String())
 
 	return
 }
 
-func (r *ChunkReader) WatchChunkFiles(cb func(chunk, first, last uint64)) (err error) {
+func (r *ChunkReader) WatchChunkFiles() (err error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
-	defer watcher.Close()
+	defer func() {
+		if err2 := watcher.Close(); err2 != nil {
+			log.Error().Msgf("error closing chunk watcher: %+v", err2)
+		}
+	}()
 
 	done := make(chan bool)
 	go func() {
@@ -179,20 +232,25 @@ func (r *ChunkReader) WatchChunkFiles(cb func(chunk, first, last uint64)) (err e
 					// 	r.numberPathMap[x] = &chunk.ChunkPath
 					// }
 
-					number, err2 := r.chunkFileNumber(event.Name)
+					chunkNumber, err2 := r.chunkFileNumber(event.Name)
 					if err2 != nil {
 						log.Fatal().Msgf("%+v", errors.WithStack(err2))
 					}
 
+					// TODO: Same question as above: save tx hashes here?
+
+					err = r.db.SetChunkRange(chunkNumber, chunk.FirstBlock, chunk.LastBlock)
+					if err != nil {
+						return
+					}
+
 					log.Info().Msgf(
 						"reloaded chunk %d, block range %d to %d (%d blocks)",
-						number,
+						chunkNumber,
 						chunk.FirstBlock,
 						chunk.LastBlock,
 						chunk.LastBlock-chunk.FirstBlock,
 					)
-
-					cb(number, chunk.FirstBlock, chunk.LastBlock)
 				}
 			case err, ok := <-watcher.Errors:
 				if !ok {
@@ -213,92 +271,52 @@ func (r *ChunkReader) WatchChunkFiles(cb func(chunk, first, last uint64)) (err e
 	return
 }
 
-type ChunkRange struct {
-	Start uint64
-	End   uint64
-	Chunk uint64
-}
-
-func (r *ChunkReader) ProcessBlockRanges() ([]ChunkRange, time.Duration) {
-	startTime := time.Now()
-
-	// Create a map to store min and max for each chunk path
-	chunkRanges := make(map[string]ChunkRange)
-
-	// Iterate through the numberPathMap
-	for blockNum, pathPtr := range r.numberPathMap {
-		if pathPtr == nil {
-			continue // Skip if path is nil
-		}
-		path := *pathPtr
-
-		// If this path is not in chunkRanges, initialize it
-		if _, exists := chunkRanges[path]; !exists {
-			chunkRanges[path] = ChunkRange{
-				Start: math.MaxUint64, // Initialize Start to maximum possible value
-				End:   0,              // Initialize End to minimum possible value
-				Chunk: blockNum,
-			}
-		}
-
-		// Update the range for this path
-		current := chunkRanges[path]
-		current.Start = uint64(math.Min(float64(current.Start), float64(blockNum)))
-		current.End = uint64(math.Max(float64(current.End), float64(blockNum)))
-		chunkRanges[path] = current
-	}
-
-	// Convert map to slice
-	result := make([]ChunkRange, 0, len(chunkRanges))
-	for _, r := range chunkRanges {
-		result = append(result, r)
-	}
-
-	// Sort the result slice by Start block number
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Start < result[j].Start
-	})
-
-	elapsedTime := time.Since(startTime)
-	return result, elapsedTime
-}
-
-func (r *ChunkReader) GetChunkedBlock(number uint64) (block *ChunkedBlock, err error) {
+func (r *ChunkReader) GetChunkedBlock(blockNumber uint64) (block *ChunkedBlock, err error) {
 	findBlockInChunk := func(chunk *Chunk) (*ChunkedBlock, error) {
 		for _, b := range chunk.BlockContainers {
-			if b.block.Data.Header.Body.Number == number {
+			if b.block.Data.Header.Body.Number == blockNumber {
 				return b, nil
 			}
 		}
 		return nil, errors.Wrapf(ErrChunkBlockMissing, "requested chunk: %s", chunk.ChunkPath)
 	}
 
-	if cachedChunk, ok := r.cache.Get(number); ok {
+	if cachedChunk, ok := r.cache.Get(blockNumber); ok {
 		return findBlockInChunk(cachedChunk)
 	}
 
-	if chunkPath, ok := r.numberPathMap[number]; ok {
-		var chunk *Chunk
-		chunk, err = r.processChunkFile(*chunkPath, false)
-		if err != nil {
-			return
-		}
-		return findBlockInChunk(chunk)
+	chunkNumber, _, _, err := r.db.GetChunkRange(blockNumber)
+	if err != nil {
+		return
 	}
 
-	return nil, errors.Wrapf(ErrBlockNotFound, "requested block: %d", number)
+	chunkFile := fmt.Sprintf("%05d.chunk", chunkNumber)
+	chunkPath := path.Join(r.immutableDir, chunkFile)
+
+	chunk, err := r.processChunkFile(chunkPath, false)
+	if err != nil {
+		return
+	}
+
+	block, err = findBlockInChunk(chunk)
+	if err == nil {
+		r.cache.Set(chunkNumber, chunk)
+		return
+	}
+
+	return nil, errors.Wrapf(ErrBlockNotFound, "requested block: %d", blockNumber)
 }
 
-func (r *ChunkReader) GetBlock(number uint64) (block *Block, err error) {
-	chunkedBlock, err := r.GetChunkedBlock(number)
+func (r *ChunkReader) GetBlock(blockNumber uint64) (block *Block, err error) {
+	chunkedBlock, err := r.GetChunkedBlock(blockNumber)
 	if err != nil {
 		return
 	}
 	return chunkedBlock.block, nil
 }
 
-func (r *ChunkReader) chunkFileNumber(path string) (number uint64, err error) {
-	numberStr := filepath.Base(path)[:len(filepath.Base(path))-6] // Remove ".chunk"
+func (r *ChunkReader) chunkFileNumber(chunkPath string) (number uint64, err error) {
+	numberStr := filepath.Base(chunkPath)[:len(filepath.Base(chunkPath))-6] // Remove ".chunk"
 	number, err = strconv.ParseUint(numberStr, 10, 64)
 	if err != nil {
 		err = errors.WithStack(err)
@@ -306,22 +324,25 @@ func (r *ChunkReader) chunkFileNumber(path string) (number uint64, err error) {
 	return
 }
 
-func (r *ChunkReader) processChunkFile(path string, firstBlockOnly bool) (c *Chunk, err error) {
-	if filepath.Ext(path) != ".chunk" {
+func (r *ChunkReader) processChunkFile(chunkPath string, firstBlockOnly bool) (c *Chunk, err error) {
+	if filepath.Ext(chunkPath) != ".chunk" {
 		err = errors.WithStack(ErrNotChunkFile)
 		return
 	}
 
 	re := regexp.MustCompile(`^\d+\.chunk$`)
-	if !re.MatchString(filepath.Base(path)) {
+	if !re.MatchString(filepath.Base(chunkPath)) {
 		return
 	}
 
-	number, err := r.chunkFileNumber(path)
-
-	data, err := os.ReadFile(path)
+	number, err := r.chunkFileNumber(chunkPath)
 	if err != nil {
-		log.Printf("Error reading file %s: %v", path, err)
+		return
+	}
+
+	data, err := os.ReadFile(chunkPath)
+	if err != nil {
+		err = errors.Wrap(err, "error reading chunk file")
 		return
 	}
 
@@ -330,7 +351,7 @@ func (r *ChunkReader) processChunkFile(path string, firstBlockOnly bool) (c *Chu
 		return
 	}
 
-	c.ChunkPath = path
+	c.ChunkPath = chunkPath
 
 	if r.Status.FirstChunkNumber == 0 || number < r.Status.FirstChunkNumber {
 		r.Status.FirstChunkNumber = number
@@ -444,13 +465,13 @@ func NewChunkCache(duration time.Duration) *ChunkCache {
 	}
 }
 
-func (c *ChunkCache) Set(number uint64, value *Chunk) {
+func (c *ChunkCache) Set(chunkNumber uint64, value *Chunk) {
 	log.Info().Msgf("loading chunk %s into cache", path.Base(value.ChunkPath))
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if entry, exists := c.data[number]; exists {
+	if entry, exists := c.data[chunkNumber]; exists {
 		entry.timer.Stop()
 	}
 
@@ -458,7 +479,7 @@ func (c *ChunkCache) Set(number uint64, value *Chunk) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		value.BlockContainers = []*ChunkedBlock{}
-		if _, exists := c.data[number]; exists {
+		if _, exists := c.data[chunkNumber]; exists {
 			for x := value.FirstBlock; x <= value.LastBlock; x++ {
 				delete(c.data, x)
 			}

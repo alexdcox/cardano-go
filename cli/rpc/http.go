@@ -13,55 +13,58 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 	"github.com/tidwall/gjson"
 )
 
-func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db Database) (server *HttpRpcServer, err error) {
-
-	// The http rpc server has a separate node connection for fetching blocks:
-
-	client, err := NewClient(&ClientOptions{
-		HostPort:      config.NodeHostPort,
-		Network:       Network(config.Network),
-		NoFollowChain: true,
+func NewHttpRpcServer(config *_config, chunkReader *ChunkReader, db Database, followClient *Client) (server *HttpRpcServer, err error) {
+	fetchClient, err := NewClient(&ClientOptions{
+		HostPort:           config.NodeHostPort,
+		Network:            Network(config.Network),
+		DisableFollowChain: true,
+		LogLevel:           zerolog.InfoLevel,
 	})
 	if err != nil {
 		return
 	}
 
 	server = &HttpRpcServer{
-		config:      config,
-		client:      client,
-		chunkReader: chunkReader,
-		db:          db,
+		config:       config,
+		followClient: followClient,
+		fetchClient:  fetchClient,
+		chunkReader:  chunkReader,
+		db:           db,
 	}
 
 	return
 }
 
 type HttpRpcServer struct {
-	app         *fiber.App
-	client      *Client
-	chunkReader *ChunkReader
-	config      *_config
-	db          Database
+	app          *fiber.App
+	followClient *Client
+	fetchClient  *Client
+	chunkReader  *ChunkReader
+	config       *_config
+	db           Database
 }
 
 func (s *HttpRpcServer) Start() (err error) {
-	err = s.client.Start()
+	err = s.fetchClient.Start()
 	if err != nil {
 		return
 	}
 
 	s.app = fiber.New(fiber.Config{
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:           30 * time.Second,
+		WriteTimeout:          30 * time.Second,
+		IdleTimeout:           120 * time.Second,
+		DisableStartupMessage: true,
 	})
 	s.app.Use(recover.New())
 	s.app.Use(func(c *fiber.Ctx) error {
-		log.Info().Msgf("[%d] %s - %s %s", c.Response().StatusCode(), c.IP(), c.Method(), c.Path())
-		return c.Next()
+		rsp := c.Next()
+		log.Info().Msgf("http response: [%d] %s - %s %s", c.Response().StatusCode(), c.IP(), c.Method(), c.Path())
+		return rsp
 	})
 
 	s.app.Get("/utxo/:address", s.getUtxoForAddress)
@@ -83,12 +86,13 @@ func (s *HttpRpcServer) Stop() (err error) {
 	if err = s.app.Shutdown(); err != nil {
 		return err
 	}
-	return s.client.Stop()
+	return s.fetchClient.Stop()
 }
 
 func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 	return c.JSON(map[string]any{
-		"db":     s.chunkReader.Status,
+		"chunks": s.chunkReader.Status,
+		"node":   s.followClient.GetTip(),
 		"config": s.config,
 	})
 }
@@ -136,7 +140,7 @@ func (s *HttpRpcServer) getUtxoForAddress(c *fiber.Ctx) error {
 }
 
 func (s *HttpRpcServer) getLatestBlock(c *fiber.Ctx) error {
-	block, err := s.client.FetchLatestBlock()
+	block, err := s.fetchClient.FetchLatestBlock()
 	if err != nil {
 		return c.Status(http.StatusInternalServerError).JSON(err)
 	}
@@ -171,7 +175,7 @@ func (s *HttpRpcServer) getBlock(c *fiber.Ctx) error {
 	// If not yet written to disk, fetch the block from the node
 
 	if point, err2 := s.db.GetBlockPoint(uint64(blockNumber)); err2 == nil {
-		if block, err3 := s.client.FetchBlock(point); err3 == nil {
+		if block, err3 := s.fetchClient.FetchBlock(point.Point); err3 == nil {
 			return returnBlock(block)
 		}
 	}
@@ -182,31 +186,7 @@ func (s *HttpRpcServer) getBlock(c *fiber.Ctx) error {
 }
 
 func (s *HttpRpcServer) getTip(c *fiber.Ctx) error {
-	output, err := runCommandWithVirtualFiles(
-		"/usr/local/bin/cardano-cli",
-		"query tip",
-		[]string{
-			fmt.Sprintf("CARDANO_NODE_NETWORK_ID=%d", config.Cardano.ShelleyConfig.NetworkMagic),
-			"CARDANO_NODE_SOCKET_PATH=" + config.SocketPath,
-		},
-		[]VirtualFile{},
-	)
-
-	if err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
-			"output": string(output),
-			"error":  fmt.Sprintf("%+v", err),
-		})
-	}
-
-	var mime = "text/plain"
-	if gjson.ParseBytes(output).IsObject() {
-		mime = "application/json"
-	}
-
-	c.Type(mime)
-
-	return c.Send(output)
+	return c.JSON(s.followClient.GetTip())
 }
 
 func (s *HttpRpcServer) postBroadcast(c *fiber.Ctx) error {

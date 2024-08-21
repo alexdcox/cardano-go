@@ -6,16 +6,14 @@ import (
 
 type Database interface {
 	SetChunkRange(chunk, start, end uint64) (err error)
-	GetChunkRange(number uint64) (start, end uint64, chunk uint64, err error)
+	GetChunkRange(block uint64) (chunk, start, end uint64, err error)
 	GetChunkSpan() (first, last uint64, err error)
-	GetBlockSpan() (first, last uint64, err error)
+	GetChunkedBlockSpan() (first, last uint64, err error)
 
-	AddTxsForBlock(txhashes []string, blockNumber uint64) (err error)
-	GetBlockForTx(txhash string) (blockNumber uint64, err error)
+	AddTxsForBlock(txhashes []string, block uint64) (err error)
+	GetBlockForTx(txhash string) (block uint64, err error)
 
-	SetTip(tip PointAndBlockNum) error
-	GetTip() (PointAndBlockNum, error)
-
-	AddBlockPoint(number uint64, point Point) (err error)
-	GetBlockPoint(number uint64) (point Point, err error)
+	AddBlockPoint(point PointAndBlockNum) (err error)
+	GetBlockPoint(block uint64) (point PointAndBlockNum, err error)
+	GetPointSpan() (firstBlock, lastBlock uint64, err error)
 }

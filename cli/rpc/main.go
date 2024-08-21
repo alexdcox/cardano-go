@@ -10,6 +10,7 @@ import (
 	. "github.com/alexdcox/cardano-go"
 	"github.com/alexdcox/cardano-go/cli/rpc/shared"
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 )
 
 type _config struct {
@@ -95,52 +96,75 @@ func main() {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	chunkReader, err := NewChunkReader(config.NodeDataPath)
-	if err != nil {
-		log.Fatal().Msgf("%+v", err)
-	}
-
 	db, err := NewSqlLiteDatabase("cardano.db")
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	shared.ChunkUpdatesToDatabase(chunkReader, db)
-
-	firstChunkedBlock, lastChunkedBlock, err := db.GetBlockSpan()
+	chunkReader, err := NewChunkReader(config.NodeDataPath, db)
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	log.Info().Msgf("chunked blocks range from %d to %d", firstChunkedBlock, lastChunkedBlock)
+	if err = chunkReader.Start(); err != nil {
+		log.Fatal().Msgf("%+v", err)
+	}
 
-	block, err := chunkReader.GetBlock(lastChunkedBlock)
+	firstChunkedBlock, lastChunkedBlock, err := db.GetChunkedBlockSpan()
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	pointNum, err := block.PointAndNumber()
+	firstBlockPoint, lastBlockPoint, err := db.GetPointSpan()
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	client, err := NewClient(&ClientOptions{
-		HostPort:    config.NodeHostPort,
-		Network:     Network(config.Network),
-		Database:    db,
-		TipOverride: &pointNum,
+	log.Info().Msgf("chunk index: %d to %d", firstChunkedBlock, lastChunkedBlock)
+	log.Info().Msgf("point index: %d to %d", firstBlockPoint, lastBlockPoint)
+
+	var clientStartPoint PointAndBlockNum
+
+	if firstBlockPoint <= lastChunkedBlock+1 {
+		log.Info().Msg("chunks overlap c2n recorded points, continuing from c2n tip")
+
+		clientStartPoint, err = db.GetBlockPoint(lastBlockPoint)
+		if err != nil {
+			log.Fatal().Msgf("%+v", err)
+		}
+
+	} else {
+		log.Info().Msg("detected gap between chunks and c2n tip, or c2n tip hasn't been established, continuing from chunked tip")
+
+		block, err2 := chunkReader.GetBlock(lastChunkedBlock)
+		if err2 != nil {
+			log.Fatal().Msgf("%+v", err2)
+		}
+
+		clientStartPoint, err2 = block.PointAndNumber()
+		if err2 != nil {
+			log.Fatal().Msgf("%+v", err2)
+		}
+	}
+
+	followClient, err := NewClient(&ClientOptions{
+		HostPort:   config.NodeHostPort,
+		Network:    Network(config.Network),
+		Database:   db,
+		StartPoint: clientStartPoint,
+		LogLevel:   zerolog.InfoLevel,
 	})
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	shared.NodeUpdatesToDatabase(client, db)
+	shared.NodeUpdatesToDatabase(followClient, db)
 
-	if err = client.Start(); err != nil {
+	if err = followClient.Start(); err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	httpServer, err := NewHttpRpcServer(config, chunkReader, db)
+	httpServer, err := NewHttpRpcServer(config, chunkReader, db, followClient)
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}

@@ -110,14 +110,14 @@ func (s *SqlLiteDatabase) SetChunkRange(chunk, start, end uint64) (err error) {
 	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetChunkRange(number uint64) (chunk, start, end uint64, err error) {
+func (s *SqlLiteDatabase) GetChunkRange(blockNumber uint64) (chunk, start, end uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	err = s.db.
 		QueryRow(
 			"SELECT chunk, start, end FROM chunks WHERE start <= ? AND end >= ?",
-			number, number).
+			blockNumber, blockNumber).
 		Scan(&chunk, &start, &end)
 
 	err = errors.WithStack(err)
@@ -179,7 +179,7 @@ func (s *SqlLiteDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, err 
 	return
 }
 
-func (s *SqlLiteDatabase) GetBlockSpan() (lowestBlock, highestBlock uint64, err error) {
+func (s *SqlLiteDatabase) GetChunkedBlockSpan() (lowestBlock, highestBlock uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -196,86 +196,56 @@ func (s *SqlLiteDatabase) GetBlockSpan() (lowestBlock, highestBlock uint64, err 
 	return
 }
 
-func (s *SqlLiteDatabase) SetTip(tip PointAndBlockNum) error {
+func (s *SqlLiteDatabase) GetPointSpan() (lowestBlock, highestBlock uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer tx.Rollback()
+	query := `
+		SELECT 
+			COALESCE(MIN(number), 0) as lowest_block,
+			COALESCE(MAX(number), 0) as highest_block
+		FROM points
+	`
 
-	_, err = tx.Exec("DELETE FROM tip")
-	if err != nil {
-		return errors.WithStack(err)
-	}
+	err = s.db.QueryRow(query).Scan(&lowestBlock, &highestBlock)
+	err = errors.WithStack(err)
 
-	_, err = tx.Exec(`
-        INSERT INTO tip (slot, hash, number)
-        VALUES (?, ?, ?)`,
-		tip.Point.Slot, tip.Point.Hash.String(), tip.Block)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	err = tx.Commit()
-	return errors.WithStack(err)
+	return
 }
 
-func (s *SqlLiteDatabase) GetTip() (tip PointAndBlockNum, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var hash string
-	err = s.db.QueryRow(`
-        SELECT slot, hash, number
-        FROM tip
-        LIMIT 1`).Scan(&tip.Point.Slot, &hash, &tip.Block)
-	if err == sql.ErrNoRows {
-		tip = PointAndBlockNum{
-			Point: Point{
-				Slot: 0,
-				Hash: make(HexBytes, 32),
-			},
-			Block: 0,
-		}
-		err = nil
-		return
-	}
-	if err != nil {
-		err = errors.WithStack(err)
-		return
-	}
-
-	tip.Point.Hash = HexString(hash).Bytes()
-
-	return tip, errors.WithStack(err)
-}
-
-func (s *SqlLiteDatabase) AddBlockPoint(number uint64, point Point) (err error) {
+func (s *SqlLiteDatabase) AddBlockPoint(p PointAndBlockNum) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	_, err = s.db.Exec(
 		"INSERT OR REPLACE INTO points (number, slot, hash) VALUES (?, ?, ?)",
-		number, point.Slot, point.Hash.String())
+		p.Block,
+		p.Point.Slot,
+		p.Point.Hash.String(),
+	)
 
 	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetBlockPoint(number uint64) (point Point, err error) {
+func (s *SqlLiteDatabase) GetBlockPoint(blockNumber uint64) (p PointAndBlockNum, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// TODO: continue from here
-	err = s.db.QueryRow(
-		"SELECT slot, hash FROM points WHERE number = ?",
-		number).Scan(&point.Slot, &point.Hash)
+	var hash string
 
-	if err == sql.ErrNoRows {
-		err = errors.New("block point not found")
+	err = s.db.
+		QueryRow("SELECT slot, hash FROM points WHERE number = ?", blockNumber).
+		Scan(&p.Point.Slot, &hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = errors.Wrap(ErrBlockNotFound, "block point not found")
+		return
+	} else if err != nil {
+		err = errors.WithStack(err)
+		return
 	}
 
-	return point, errors.WithStack(err)
+	p.Block = blockNumber
+	p.Point.Hash = HexString(hash).Bytes()
+
+	return
 }

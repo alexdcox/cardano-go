@@ -15,11 +15,12 @@ import (
 )
 
 type ClientOptions struct {
-	HostPort      string
-	Network       Network
-	Database      Database
-	TipOverride   *PointAndBlockNum
-	NoFollowChain bool
+	HostPort           string
+	Network            Network
+	Database           Database
+	StartPoint         PointAndBlockNum
+	DisableFollowChain bool
+	LogLevel           zerolog.Level
 }
 
 func (o *ClientOptions) setDefaults() {
@@ -33,6 +34,10 @@ func (o *ClientOptions) setDefaults() {
 
 	if o.Database == nil {
 		o.Database = NewInMemoryDatabase()
+	}
+
+	if len(o.StartPoint.Point.Hash) == 0 {
+		o.StartPoint = PointAndBlockNum{Point: NewPoint()}
 	}
 }
 
@@ -52,14 +57,16 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 		return
 	}
 
+	clientLog := LogAtLevel(options.LogLevel)
+
 	client = &Client{
 		options: options,
-		keepAliveCaller: NewPeriodicCaller(time.Second*4, func() {
+		keepAliveCaller: NewPeriodicCaller(time.Second*3, func() {
 			client.keepAlive()
 		}),
-		in:         NewMessageReader(),
+		in:         NewMessageReader(clientLog),
 		params:     params,
-		log:        LogAtLevel(zerolog.InfoLevel),
+		log:        clientLog,
 		db:         options.Database,
 		pubsub:     NewQueue[any](),
 		shutdownWg: &sync.WaitGroup{},
@@ -82,10 +89,6 @@ type Client struct {
 	pubsub          PubSubQueue[any]
 }
 
-// func (c *Client) GetTip() (tip Tip, err error) {
-// 	return c.tip, nil
-// }
-
 func (c *Client) Start() (err error) {
 	c.log.Info().Msg("starting client")
 
@@ -107,18 +110,9 @@ func (c *Client) Start() (err error) {
 	}
 
 	c.keepAliveCaller.Start()
+	c.tip = c.options.StartPoint
 
-	if c.options.TipOverride != nil {
-		c.tip = *c.options.TipOverride
-	} else {
-		tip, err2 := c.db.GetTip()
-		if err2 != nil {
-			return err2
-		}
-		c.tip = tip
-	}
-
-	if !c.options.NoFollowChain {
+	if !c.options.DisableFollowChain {
 		go c.followChain()
 	}
 
@@ -130,10 +124,7 @@ func (c *Client) followChain() {
 		c.log.Info().Msg("no previous or configured tip, following chain from node tip")
 
 		go func() {
-			err := c.SendMessage(&MessageFindIntersect{Points: []Point{{
-				Slot: 0,
-				Hash: make([]byte, 32),
-			}}})
+			err := c.SendMessage(&MessageFindIntersect{Points: []Point{NewPoint()}})
 			if err != nil {
 				c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
 				return
@@ -239,14 +230,6 @@ func (c *Client) followChain() {
 	})
 }
 
-// var DefaultMainnetTip = Tip{
-// 	Point: Point{
-// 		Slot: 127350361,
-// 		Hash: HexString("cb1a4a043fa0e00bc02945358216357cf314fcf69fca3ca0320614a0691dcd62").Bytes(),
-// 	},
-// 	Block: 10471759,
-// }
-
 func (c *Client) Stop() (err error) {
 	if c.shutdown {
 		c.log.Warn().Msg("client shutdown already in progress...")
@@ -262,7 +245,7 @@ func (c *Client) Stop() (err error) {
 		return
 	}
 
-	return errors.WithStack(c.db.SetTip(c.tip))
+	return
 }
 
 func (c *Client) dial() (err error) {
@@ -277,16 +260,12 @@ func (c *Client) dial() (err error) {
 }
 
 func (c *Client) beginReadStream(wg *sync.WaitGroup) {
-	// c.inStream = make(chan Message)
 	wg.Done()
-
-	// defer close(c.inStream)
 	for {
 		if c.shutdown {
 			return
 		}
 
-		// buf := make([]byte, int(math.Pow(2, 20)))
 		buf := make([]byte, 402)
 		n, err := c.conn.Read(buf)
 		if err != nil {
@@ -334,9 +313,6 @@ func (c *Client) handshake() (err error) {
 }
 
 func (c *Client) keepAlive() {
-	// c.keepAliveMu.Lock()
-	// defer c.keepAliveMu.Unlock()
-
 	cookieBytes := make([]byte, 4)
 	_, _ = rand.Read(cookieBytes)
 	cookie := binary.BigEndian.Uint16(cookieBytes)
@@ -361,26 +337,19 @@ func EncodeCardanoTimestamp(timestamp uint32) []byte {
 }
 
 func (c *Client) SendSegment(segment *Segment) (err error) {
-	if segment.Protocol != ProtocolKeepAlive {
-		// c.keepAliveMu.Lock()
-		// defer c.keepAliveMu.Unlock()
-	}
-
 	writeBytes, err := segment.MarshalDataItem()
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
 	for _, msg := range segment.messages {
-		if segment.Protocol != ProtocolKeepAlive {
-			c.log.Debug().Msgf(
-				"message out: %T, protocol: %d, subprotocol: %d",
-				msg,
-				segment.Protocol,
-				msg.GetSubprotocol())
-		}
+		c.log.Debug().Msgf(
+			"message out: %T, protocol: %d, subprotocol: %d",
+			msg,
+			segment.Protocol,
+			msg.GetSubprotocol())
 	}
-	c.log.Debug().Msgf("write: %x", writeBytes)
+	c.log.Trace().Msgf("write: %x", writeBytes)
 
 	n, err := c.conn.Write(writeBytes)
 	if err != nil {
@@ -583,6 +552,10 @@ func (c *Client) ReceiveNextOfType(message *Message) (err error) {
 
 func (c *Client) Subscribe(cb func(i any)) func() {
 	return c.pubsub.On(cb)
+}
+
+func (c *Client) GetTip() PointAndBlockNum {
+	return c.tip
 }
 
 func ReceiveNextOfType[T Message](c *Client) (message T, err error) {

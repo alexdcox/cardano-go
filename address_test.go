@@ -53,7 +53,7 @@ func TestAddress_EncodeDecode(t *testing.T) {
 		bech32Addr    string
 	}{
 		{
-			// TODO: Test for the wire format as would be sent via n2n protocol
+			// TODO: Test for the wire format as would be sent via c2n protocol
 			publicKey:     "ce13cd433cdcb3dfb00c04e216956aeb622dcd7f282b03304d9fc9de804723b2",
 			network:       NetworkPrivateNet,
 			typ:           AddressTypePayment,

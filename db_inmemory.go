@@ -7,11 +7,17 @@ import (
 	"github.com/pkg/errors"
 )
 
+type ChunkRange struct {
+	Start uint64
+	End   uint64
+	Chunk uint64
+}
+
 type InMemoryDatabase struct {
 	chunks map[uint64]ChunkRange
 	txs    map[string]uint64
 	tip    PointAndBlockNum
-	points map[uint64]Point
+	points map[uint64]PointAndBlockNum
 	mu     sync.RWMutex
 }
 
@@ -21,7 +27,7 @@ func NewInMemoryDatabase() *InMemoryDatabase {
 	return &InMemoryDatabase{
 		chunks: make(map[uint64]ChunkRange),
 		txs:    make(map[string]uint64),
-		points: make(map[uint64]Point),
+		points: make(map[uint64]PointAndBlockNum),
 	}
 }
 
@@ -99,7 +105,7 @@ func (db *InMemoryDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, er
 	return lowestChunk, highestChunk, nil
 }
 
-func (db *InMemoryDatabase) GetBlockSpan() (lowestBlock, highestBlock uint64, err error) {
+func (db *InMemoryDatabase) GetChunkedBlockSpan() (lowestBlock, highestBlock uint64, err error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -119,36 +125,41 @@ func (db *InMemoryDatabase) GetBlockSpan() (lowestBlock, highestBlock uint64, er
 	return lowestBlock, highestBlock, nil
 }
 
-func (db *InMemoryDatabase) SetTip(tip PointAndBlockNum) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	db.tip = tip
-	return nil
-}
-
-func (db *InMemoryDatabase) GetTip() (tip PointAndBlockNum, err error) {
+func (db *InMemoryDatabase) GetPointSpan() (lowestBlock, highestBlock uint64, err error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	return db.tip, nil
+	if len(db.chunks) == 0 {
+		return 0, 0, nil
+	}
+
+	for blockNumber, _ := range db.points {
+		if blockNumber < lowestBlock || lowestBlock == 0 {
+			lowestBlock = blockNumber
+		}
+		if blockNumber > highestBlock {
+			highestBlock = blockNumber
+		}
+	}
+
+	return lowestBlock, highestBlock, nil
 }
 
-func (db *InMemoryDatabase) AddBlockPoint(number uint64, point Point) error {
+func (db *InMemoryDatabase) AddBlockPoint(point PointAndBlockNum) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	db.points[number] = point
+	db.points[point.Block] = point
 	return nil
 }
 
-func (db *InMemoryDatabase) GetBlockPoint(number uint64) (point Point, err error) {
+func (db *InMemoryDatabase) GetBlockPoint(number uint64) (point PointAndBlockNum, err error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	point, ok := db.points[number]
 	if !ok {
-		return Point{}, errors.New("block point not found")
+		return PointAndBlockNum{}, errors.New("block point not found")
 	}
 
 	return point, nil

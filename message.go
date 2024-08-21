@@ -22,10 +22,10 @@ type MessageReader struct {
 	log           *zerolog.Logger
 }
 
-func NewMessageReader() *MessageReader {
+func NewMessageReader(log *zerolog.Logger) *MessageReader {
 	return &MessageReader{
 		cbor: StandardCborDecoder,
-		log:  LogAtLevel(zerolog.InfoLevel),
+		log:  log,
 	}
 }
 
@@ -55,7 +55,7 @@ func (r *MessageReader) readHeader(data []byte) (timestamp []byte, protocol uint
 	byteLenBytes := data[6:8]
 	byteLen = binary.BigEndian.Uint16(byteLenBytes)
 
-	r.log.Debug().Msgf("new segment. timestamp %x, protocol %v, byteLen %v", timestamp, protocol, byteLen)
+	r.log.Trace().Msgf("new segment. timestamp %x, protocol %v, byteLen %v", timestamp, protocol, byteLen)
 
 	return
 }
@@ -68,7 +68,7 @@ func (r *MessageReader) reset() {
 }
 
 func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
-	r.log.Debug().Msgf("read: %x", data)
+	r.log.Trace().Msgf("read: %x", data)
 
 	i := 0
 	var nextMessages []Message
@@ -84,7 +84,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 
 		if len(r.buffer) == 0 {
 			if len(data[i:]) <= 8 {
-				r.log.Debug().Msgf("partial/lone header detected [%d:%d]", i, len(data))
+				r.log.Debug().Msgf("partial/lone header detected [%d:%d] %x", i, len(data), data[i:])
 				r.partialHeader = append(r.partialHeader, data[i:]...)
 				return
 			}
@@ -101,13 +101,8 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 				return
 			}
 
-			i += 8
-
-			if len(r.partialHeader) > 0 {
-				r.log.Debug().Msgf("bringin back index %d bytes for partial header", len(r.partialHeader))
-				i -= len(r.partialHeader)
-				r.partialHeader = []byte{}
-			}
+			i += 8 - len(r.partialHeader)
+			r.partialHeader = []byte{}
 		}
 
 		bytesNeedRead := int(r.length) - len(r.buffer)
@@ -117,13 +112,13 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 			bytesShouldRead = bytesCanRead
 		}
 
-		r.log.Debug().Msgf("read data to segment [%d:%d]", i, i+bytesShouldRead)
+		r.log.Trace().Msgf("read data to segment [%d:%d]", i, i+bytesShouldRead)
 		r.buffer = append(r.buffer, data[i:i+bytesShouldRead]...)
 		i += bytesShouldRead
 
 		if len(r.buffer) == int(r.length) {
 			if r.batching {
-				r.log.Debug().Msg("batched segment complete")
+				r.log.Trace().Msg("batched segment complete")
 				r.batchBuffer = append(r.batchBuffer, r.buffer...)
 
 				blockMessages, remaining, err2 := r.nextBlocks(r.batchBuffer)
@@ -153,7 +148,7 @@ func (r *MessageReader) Read(data []byte) (messages []Message, err error) {
 				r.reset()
 				continue
 			} else {
-				r.log.Debug().Msg("segment complete")
+				r.log.Trace().Msg("segment complete")
 			}
 
 			var remaining []byte
@@ -197,7 +192,7 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 		}
 
 		if bytes.HasPrefix(data[i:], batchEnd) {
-			r.log.Debug().Msg("read batch done")
+			r.log.Trace().Msg("read batch done")
 			i += 2
 			messages = append(messages, &MessageBatchDone{})
 
@@ -277,7 +272,7 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 			}
 		}
 
-		r.log.Debug().Msgf("read block message from buffer[%d:%d/%d]", i, i+bytesRead, len(data))
+		r.log.Trace().Msgf("read block message from buffer[%d:%d/%d]", i, i+bytesRead, len(data))
 
 		messages = append(messages, nextMessage)
 		test = append(test, data[i:i+bytesRead])
@@ -306,7 +301,7 @@ func (r *MessageReader) nextMessages(data []byte) (messages []Message, remaining
 		}
 
 		if _, is := msg.(*MessageStartBatch); is {
-			r.log.Debug().Msg("read batch start")
+			r.log.Trace().Msg("read batch start")
 			r.batching = true
 		}
 

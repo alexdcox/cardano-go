@@ -22,7 +22,7 @@ func NewChunkReader(dir string, db Database) (reader *ChunkReader, err error) {
 		dir:          dir,
 		immutableDir: path.Join(dir, "./immutable/"),
 		db:           db,
-		cache:        NewChunkCache(time.Second * 30),
+		cache:        NewChunkCache(time.Second * 10),
 	}
 
 	return
@@ -272,12 +272,13 @@ func (r *ChunkReader) GetBlock(blockNumber uint64) (block *Block, err error) {
 	}
 
 	block, err = findBlockInChunk(chunk)
-	if err == nil {
-		r.cache.Set(chunkNumber, chunk)
+	if err != nil {
+		err = errors.Wrapf(ErrBlockNotFound, "requested block: %d", blockNumber)
 		return
 	}
 
-	return nil, errors.Wrapf(ErrBlockNotFound, "requested block: %d", blockNumber)
+	r.cache.Set(chunk)
+	return
 }
 
 func (r *ChunkReader) chunkFileNumber(chunkPath string) (number uint64, err error) {
@@ -469,31 +470,29 @@ func NewChunkCache(duration time.Duration) *ChunkCache {
 	}
 }
 
-func (c *ChunkCache) Set(chunkNumber uint64, value *Chunk) {
-	log.Info().Msgf("loading chunk %s into cache", path.Base(value.ChunkPath))
+func (c *ChunkCache) Set(chunk *Chunk) {
+	log.Info().Msgf("loading chunk %d into cache", chunk.Number)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if entry, exists := c.data[chunkNumber]; exists {
+	if entry, exists := c.data[chunk.Number]; exists {
 		entry.timer.Stop()
 	}
 
 	timer := time.AfterFunc(c.duration, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		value.Blocks = []*Block{}
-		if _, exists := c.data[chunkNumber]; exists {
-			for x := value.FirstBlock; x <= value.LastBlock; x++ {
-				delete(c.data, x)
-			}
-			log.Info().Msgf("removing chunk %s from cache", path.Base(value.ChunkPath))
+		chunk.Blocks = []*Block{}
+		for x := chunk.FirstBlock; x <= chunk.LastBlock; x++ {
+			delete(c.data, x)
 		}
+		log.Info().Msgf("removing chunk %d from cache", chunk.Number)
 	})
 
-	for x := value.FirstBlock; x <= value.LastBlock; x++ {
+	for x := chunk.FirstBlock; x <= chunk.LastBlock; x++ {
 		c.data[x] = &chunkCacheEntry{
-			value: value,
+			value: chunk,
 			timer: timer,
 		}
 	}

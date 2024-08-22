@@ -2,5 +2,7 @@ cardano-go
 rpc
 _*/
 latest-tip.json
+cardano-rpc.db
+cardano-rpc.db-journal
 cardano.db
 cardano.db-journal

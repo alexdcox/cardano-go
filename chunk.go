@@ -29,10 +29,11 @@ func NewChunkReader(dir string, db Database) (reader *ChunkReader, err error) {
 }
 
 type Chunk struct {
-	FirstBlock      uint64
-	LastBlock       uint64
-	BlockContainers []*ChunkedBlock
-	ChunkPath       string
+	FirstBlock uint64
+	LastBlock  uint64
+	Blocks     []*Block
+	ChunkPath  string
+	Number     uint64
 }
 
 type ChunkReader struct {
@@ -40,11 +41,6 @@ type ChunkReader struct {
 	immutableDir string
 	cache        *ChunkCache
 	db           Database
-}
-
-type ChunkedBlock struct {
-	block *Block
-	data  []byte
 }
 
 func (r *ChunkReader) Start() (err error) {
@@ -69,17 +65,43 @@ func (r *ChunkReader) Start() (err error) {
 	return
 }
 
-func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
-	log.Info().Msgf("locating chunk files from chunk %d...", skipUntilNumber)
+func (r *ChunkReader) writeIndexForChunk(chunk *Chunk) (err error) {
+	err = r.db.SetChunkRange(chunk.Number, chunk.FirstBlock, chunk.LastBlock)
+	if err != nil {
+		return
+	}
 
-	var initialChunkFiles []string
+	log.Info().Msgf(
+		"indexed chunk %d block range %d to %d (%d blocks)",
+		chunk.Number,
+		chunk.FirstBlock,
+		chunk.LastBlock,
+		chunk.LastBlock-chunk.FirstBlock,
+	)
+
+	return
+}
+
+func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
+	log.Info().Msgf("locating chunk files (onwards from chunk %d)...", skipUntilNumber)
+
+	var firstChunk, lastChunk uint64
 	err = filepath.Walk(r.immutableDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
 		if !info.IsDir() && strings.HasSuffix(info.Name(), ".chunk") {
-			initialChunkFiles = append(initialChunkFiles, path)
+			number, err2 := r.chunkFileNumber(info.Name())
+			if err2 != nil {
+				return errors.WithStack(err2)
+			}
+			if number < firstChunk {
+				firstChunk = number
+			}
+			if number > lastChunk {
+				lastChunk = number
+			}
 		}
 		return nil
 	})
@@ -87,89 +109,58 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 		log.Fatal().Msgf("error walking through directory: %v", err)
 	}
 
-	firstNumber, _ := r.chunkFileNumber(initialChunkFiles[0])
-	lastNumber, _ := r.chunkFileNumber(initialChunkFiles[len(initialChunkFiles)-1])
+	// log.Info().Msgf("processing chunk file: %d/%d", chunkNumber, len(initialChunkFiles))
 
-	log.Info().Msgf(
-		"loading %d chunk files ranging from %d to %d...",
-		len(initialChunkFiles),
-		firstNumber,
-		lastNumber,
-	)
+	conwayBlock, conwayChunk, err := r.findFirstConwayBlock(firstChunk, lastChunk)
+	if err != nil {
+		return
+	}
 
-	// TODO: Remove this!
-	const FirstConwayChunk = 3348
+	log.Info().Msgf("found conway block at %d in chunk %d", conwayBlock.Data.Header.Body.Number, conwayChunk.Number)
 
-	var chunks []*Chunk
-	for i, chunkFile := range initialChunkFiles {
-		number, _ := r.chunkFileNumber(chunkFile)
-		if number < FirstConwayChunk || number <= skipUntilNumber {
-			continue
-		}
-		firstBlockOnly := true
-		if i == len(initialChunkFiles)-1 {
-			firstBlockOnly = false
-		}
-		chunk, err2 := r.processChunkFile(chunkFile, firstBlockOnly)
-		if errors.Is(err2, ErrEraBeforeConway) {
-			continue
-		}
+	if conwayChunk.Number > firstChunk {
+		firstChunk = conwayChunk.Number
+	}
+
+	if firstChunk < skipUntilNumber {
+		firstChunk = skipUntilNumber
+	}
+
+	if lastChunk > firstChunk {
+		log.Info().Msgf("loading chunk files ranging from %d to %d...", firstChunk, lastChunk)
+	} else {
+		log.Info().Msg("no new chunk files to load")
+	}
+
+	var previousChunk *Chunk
+
+	for chunkNumber := firstChunk; chunkNumber <= lastChunk; chunkNumber++ {
+		chunk, err2 := r.processChunkFile(chunkNumber, chunkNumber != lastChunk)
 		if err2 != nil {
-			log.Error().Msgf("%+v", err2)
+			return err2
 		}
-		if firstBlockOnly {
-			chunk.BlockContainers = []*ChunkedBlock{}
-		}
-		chunks = append(chunks, chunk)
-
-		i2 := len(chunks) - 1
-		if i2 == 0 {
+		if chunk.Blocks == nil {
 			continue
 		}
-		if i2 == len(initialChunkFiles)-1 {
-			// TODO: Do we need to save tx hashes?
 
-			chunks[i2].BlockContainers = []*ChunkedBlock{}
-
-			chunkNumber := number - 1
-			firstBlock := chunks[i2].FirstBlock
-			lastBlock := chunks[i2].LastBlock - 1
-			blockRange := chunks[i2].LastBlock - chunks[i2].FirstBlock
-
-			err = r.db.SetChunkRange(chunkNumber, firstBlock, lastBlock)
-			if err != nil {
-				return
-			}
-
-			log.Info().Msgf(
-				"loaded chunk %d, block range %d to %d (%d blocks)",
-				chunkNumber,
-				firstBlock,
-				lastBlock,
-				blockRange,
-			)
-			break
+		if previousChunk == nil {
+			previousChunk = chunk
+			continue
 		}
 
-		// TODO: Same question as above: save tx hashes here?
+		previousChunk.LastBlock = chunk.FirstBlock - 1
 
-		chunkNumber := number - 1
-		firstBlock := chunks[i2-1].FirstBlock
-		lastBlock := chunks[i2].FirstBlock - 1
-		blockRange := chunks[i2].FirstBlock - chunks[i2-1].FirstBlock
-
-		err = r.db.SetChunkRange(chunkNumber, firstBlock, lastBlock)
-		if err != nil {
+		if err = r.writeIndexForChunk(previousChunk); err != nil {
 			return
 		}
 
-		log.Info().Msgf(
-			"loaded chunk %d, block range %d to %d (%d blocks)",
-			chunkNumber,
-			firstBlock,
-			lastBlock,
-			blockRange,
-		)
+		previousChunk = chunk
+
+		if chunkNumber == lastChunk {
+			if err = r.writeIndexForChunk(chunk); err != nil {
+				return
+			}
+		}
 	}
 
 	firstBlock, lastBlock, err := r.db.GetChunkedBlockSpan()
@@ -179,7 +170,7 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 	blockRange := lastBlock - firstBlock
 
 	p := message.NewPrinter(language.English)
-	log.Info().Msgf("found %s chunked blocks in database", p.Sprintf("%d", blockRange))
+	log.Info().Msgf("found %s chunked blocks", p.Sprintf("%d", blockRange))
 
 	return
 }
@@ -204,7 +195,12 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 					return
 				}
 				if event.Op&fsnotify.Write == fsnotify.Write {
-					chunk, err2 := r.processChunkFile(event.Name, false)
+					chunkNumber, err2 := r.chunkFileNumber(event.Name)
+					if err != nil {
+						err = errors.WithStack(err2)
+						return
+					}
+					chunk, err2 := r.processChunkFile(chunkNumber, false)
 					if errors.Is(err2, ErrNotChunkFile) {
 						continue
 					}
@@ -216,11 +212,6 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 					// 	log.Info().Msgf("watch %d -> %s", x, chunk.ChunkPath)
 					// 	r.numberPathMap[x] = &chunk.ChunkPath
 					// }
-
-					chunkNumber, err2 := r.chunkFileNumber(event.Name)
-					if err2 != nil {
-						log.Fatal().Msgf("%+v", errors.WithStack(err2))
-					}
 
 					// TODO: Same question as above: save tx hashes here?
 
@@ -256,10 +247,10 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 	return
 }
 
-func (r *ChunkReader) GetChunkedBlock(blockNumber uint64) (block *ChunkedBlock, err error) {
-	findBlockInChunk := func(chunk *Chunk) (*ChunkedBlock, error) {
-		for _, b := range chunk.BlockContainers {
-			if b.block.Data.Header.Body.Number == blockNumber {
+func (r *ChunkReader) GetBlock(blockNumber uint64) (block *Block, err error) {
+	findBlockInChunk := func(chunk *Chunk) (*Block, error) {
+		for _, b := range chunk.Blocks {
+			if b.Data.Header.Body.Number == blockNumber {
 				return b, nil
 			}
 		}
@@ -275,10 +266,7 @@ func (r *ChunkReader) GetChunkedBlock(blockNumber uint64) (block *ChunkedBlock, 
 		return
 	}
 
-	chunkFile := fmt.Sprintf("%05d.chunk", chunkNumber)
-	chunkPath := path.Join(r.immutableDir, chunkFile)
-
-	chunk, err := r.processChunkFile(chunkPath, false)
+	chunk, err := r.processChunkFile(chunkNumber, false)
 	if err != nil {
 		return
 	}
@@ -292,14 +280,6 @@ func (r *ChunkReader) GetChunkedBlock(blockNumber uint64) (block *ChunkedBlock, 
 	return nil, errors.Wrapf(ErrBlockNotFound, "requested block: %d", blockNumber)
 }
 
-func (r *ChunkReader) GetBlock(blockNumber uint64) (block *Block, err error) {
-	chunkedBlock, err := r.GetChunkedBlock(blockNumber)
-	if err != nil {
-		return
-	}
-	return chunkedBlock.block, nil
-}
-
 func (r *ChunkReader) chunkFileNumber(chunkPath string) (number uint64, err error) {
 	numberStr := filepath.Base(chunkPath)[:len(filepath.Base(chunkPath))-6] // Remove ".chunk"
 	number, err = strconv.ParseUint(numberStr, 10, 64)
@@ -309,7 +289,10 @@ func (r *ChunkReader) chunkFileNumber(chunkPath string) (number uint64, err erro
 	return
 }
 
-func (r *ChunkReader) processChunkFile(chunkPath string, firstBlockOnly bool) (c *Chunk, err error) {
+func (r *ChunkReader) processChunkFile(chunkNumber uint64, firstBlockOnly bool) (c *Chunk, err error) {
+	chunkFile := fmt.Sprintf("%05d.chunk", chunkNumber)
+	chunkPath := path.Join(r.immutableDir, chunkFile)
+
 	if filepath.Ext(chunkPath) != ".chunk" {
 		err = errors.WithStack(ErrNotChunkFile)
 		return
@@ -332,6 +315,7 @@ func (r *ChunkReader) processChunkFile(chunkPath string, firstBlockOnly bool) (c
 	}
 
 	c.ChunkPath = chunkPath
+	c.Number = chunkNumber
 
 	return
 }
@@ -344,6 +328,22 @@ func (r *ChunkReader) readChunkData(data []byte, firstBlockOnly bool) (out *Chun
 			break
 		}
 
+		var a []any
+		rest, err2 := StandardCborDecoder.UnmarshalFirst(data, &a)
+		if err2 != nil {
+			err = errors.WithStack(err2)
+			return
+		}
+
+		if a[0].(uint64) < uint64(EraConway) {
+			data = rest
+			if firstBlockOnly {
+				err = errors.WithStack(ErrEraBeforeConway)
+				return
+			}
+			continue
+		}
+
 		block := &Block{}
 
 		remaining, err2 := StandardCborDecoder.UnmarshalFirst(data, block)
@@ -352,14 +352,11 @@ func (r *ChunkReader) readChunkData(data []byte, firstBlockOnly bool) (out *Chun
 			return
 		}
 
-		blockContainer := &ChunkedBlock{
-			block: block,
-			data:  data[:len(data)-len(remaining)],
-		}
+		block.Raw = data[:len(data)-len(remaining)]
 
 		blockBody := block.Data.Header.Body
 
-		if len(out.BlockContainers) == 0 {
+		if len(out.Blocks) == 0 {
 			out.FirstBlock = blockBody.Number
 		}
 
@@ -371,7 +368,7 @@ func (r *ChunkReader) readChunkData(data []byte, firstBlockOnly bool) (out *Chun
 			out.LastBlock = blockBody.Number
 		}
 
-		out.BlockContainers = append(out.BlockContainers, blockContainer)
+		out.Blocks = append(out.Blocks, block)
 
 		if len(remaining) == len(data) {
 			log.Info().Msg("seems like we got it all")
@@ -410,6 +407,50 @@ func (r *ChunkReader) WaitForReady() {
 	}
 }
 
+func (r *ChunkReader) findFirstConwayBlock(firstChunk, lastChunk uint64) (conwayBlock *Block, conwayChunk *Chunk, err error) {
+	log.Info().Msg("locating first conway chunk/block...")
+
+	var conwayChunkNum uint64
+
+	err = BinarySearchCallback(firstChunk, lastChunk, func(chunkNumber uint64) (search int, err error) {
+		hasBlocks := func(chunkNumber uint64) bool {
+			if chunk, err2 := r.processChunkFile(chunkNumber, true); err2 == nil {
+				return chunk.Blocks != nil
+			}
+			return false
+		}
+
+		if hasBlocks(chunkNumber) {
+			if hasBlocks(chunkNumber - 1) {
+				return -1, nil
+			} else {
+				conwayChunkNum = chunkNumber
+				return 0, nil
+			}
+		}
+
+		return 1, nil
+	})
+	if err != nil {
+		err = errors.Wrap(err, "failed to find conway chunk")
+		return
+	}
+
+	conwayChunk, err = r.processChunkFile(conwayChunkNum, false)
+	if err != nil {
+		return
+	}
+
+	if len(conwayChunk.Blocks) < 1 {
+		err = errors.Wrap(ErrBlockNotFound, "conway block not found")
+		return
+	}
+
+	conwayBlock = conwayChunk.Blocks[0]
+
+	return
+}
+
 type ChunkCache struct {
 	data     map[uint64]*chunkCacheEntry
 	duration time.Duration
@@ -441,7 +482,7 @@ func (c *ChunkCache) Set(chunkNumber uint64, value *Chunk) {
 	timer := time.AfterFunc(c.duration, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		value.BlockContainers = []*ChunkedBlock{}
+		value.Blocks = []*Block{}
 		if _, exists := c.data[chunkNumber]; exists {
 			for x := value.FirstBlock; x <= value.LastBlock; x++ {
 				delete(c.data, x)

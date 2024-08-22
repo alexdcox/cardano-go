@@ -14,6 +14,7 @@ import (
 )
 
 type _config struct {
+	DatabasePath string `json:"databasepath"`
 	NodeDataPath string `json:"nodedatapath"`
 	NodeHostPort string `json:"nodehostport"`
 	Network      string `json:"network"`
@@ -26,9 +27,11 @@ type _config struct {
 	ByronConfigPath   string  `json:"byronconfigpath"`
 	ShelleyConfigPath string  `json:"shelleyconfigpath"`
 	Cardano           *Config `json:"cardano"`
+	LogLevel          string  `json:"loglevel"`
 }
 
 func (c *_config) Load() (err error) {
+	flag.StringVar(&c.DatabasePath, "databasepath", "cardano-rpc.db", "Path to the cardano-go sqlite database")
 	flag.StringVar(&c.NodeDataPath, "nodedatapath", "/opt/cardano/data", "Path to the node chunk directory")
 	flag.StringVar(&c.NodeHostPort, "nodehostport", "localhost:3000", "Set host:port for the http/rpc listener")
 	flag.StringVar(&c.Network, "network", "", "Set network (mainnet|preprod|privnet)")
@@ -37,6 +40,7 @@ func (c *_config) Load() (err error) {
 	flag.StringVar(&c.NodeConfigPath, "nodeconfigpath", "", "Path to the node config json")
 	flag.StringVar(&c.ByronConfigPath, "byronconfigpath", "", "Path to the byron config json")
 	flag.StringVar(&c.ShelleyConfigPath, "shelleyconfigpath", "", "Path to the shelley config json")
+	flag.StringVar(&c.LogLevel, "loglevel", "", "Set the log level (trace|debug|info|warn|error|fatal)")
 	flag.Parse()
 
 	c.Cardano = &Config{}
@@ -96,7 +100,18 @@ func main() {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	db, err := NewSqlLiteDatabase("cardano.db")
+	if config.LogLevel == "" {
+		config.LogLevel = "info"
+	}
+	logLevel, err := zerolog.ParseLevel(config.LogLevel)
+	if err != nil {
+		log.Fatal().Msgf("%+v", errors.WithStack(err))
+	}
+
+	log.Info().Msgf("setting log level to: '%s'", logLevel)
+	zerolog.SetGlobalLevel(logLevel)
+
+	db, err := NewSqlLiteDatabase(config.DatabasePath)
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
@@ -121,11 +136,16 @@ func main() {
 	}
 
 	log.Info().Msgf("chunk index: %d to %d", firstChunkedBlock, lastChunkedBlock)
-	log.Info().Msgf("point index: %d to %d", firstBlockPoint, lastBlockPoint)
+
+	if firstBlockPoint > 0 {
+		log.Info().Msgf("point index: %d to %d", firstBlockPoint, lastBlockPoint)
+	} else {
+		log.Info().Msg("point index: not established")
+	}
 
 	var clientStartPoint PointAndBlockNum
 
-	if firstBlockPoint <= lastChunkedBlock+1 {
+	if firstBlockPoint > 0 && firstBlockPoint <= lastChunkedBlock+1 {
 		log.Info().Msg("chunks overlap client recorded points, continuing from client tip")
 
 		clientStartPoint, err = db.GetBlockPoint(lastBlockPoint)

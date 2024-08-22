@@ -192,3 +192,26 @@ func (pc *PeriodicCaller) Stop() {
 		close(pc.stopChan)
 	}
 }
+
+func BinarySearchCallback(start, end uint64, callback func(uint64) (int, error)) error {
+	for start <= end {
+		mid := start + (end-start)/2
+
+		result, err := callback(mid)
+		if err != nil {
+			return err
+		}
+
+		switch result {
+		case -1:
+			end = mid - 1
+		case 1:
+			start = mid + 1
+		case 0:
+			return nil
+		default:
+			return errors.Errorf("invalid callback result: %d", result)
+		}
+	}
+	return errors.New("search completed without finding a match")
+}

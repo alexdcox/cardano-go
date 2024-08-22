@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -108,7 +109,18 @@ func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 		return s.errorResponse(c, err)
 	}
 
+	fileInfo, err := os.Stat(s.config.DatabasePath)
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	sizeInBytes := fileInfo.Size()
+	sizeInMB := float64(sizeInBytes) / 1024 / 1024
+
 	return c.JSON(map[string]any{
+		"db": map[string]any{
+			"sizeMB": fmt.Sprintf("%.2f MB", sizeInMB),
+		},
 		"chunks": map[string]any{
 			"firstBlock": firstChunkedBlock,
 			"lastBlock":  lastChunkedBlock,

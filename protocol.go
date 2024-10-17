@@ -256,6 +256,10 @@ func (p Point) String() string {
 	return fmt.Sprintf("slot: %d | hash: %s", p.Slot, p.Hash)
 }
 
+func NewPointAndNum() PointAndBlockNum {
+	return PointAndBlockNum{Point: NewPoint()}
+}
+
 type PointAndBlockNum struct {
 	_     struct{} `cbor:",toarray"`
 	Point Point    `json:"point"`

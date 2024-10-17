@@ -152,11 +152,21 @@ func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) 
 	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetBlockForTx(txhash string) (blockNumber uint64, err error) {
+func (s *SqlLiteDatabase) GetBlockNumForTx(txhash string) (blockNumber uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	err = s.db.QueryRow("SELECT block_number FROM txs WHERE txhash = ?", txhash).Scan(&blockNumber)
+	err = errors.WithStack(err)
+
+	return
+}
+
+func (s *SqlLiteDatabase) GetBlockNumForHash(blockHash string) (blockNumber uint64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err = s.db.QueryRow("SELECT number FROM points WHERE hash = ?", blockHash).Scan(&blockNumber)
 	err = errors.WithStack(err)
 
 	return

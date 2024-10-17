@@ -2,18 +2,19 @@ package cardano
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"filippo.io/edwards25519"
 	"github.com/fxamacker/cbor/v2"
-	"github.com/pkg/errors"
+	"golang.org/x/crypto/blake2b"
 )
 
 func ExpandEd25519PrivateKey(private *ed25519.PrivateKey) {
@@ -214,4 +215,36 @@ func BinarySearchCallback(start, end uint64, callback func(uint64) (int, error))
 		}
 	}
 	return errors.New("search completed without finding a match")
+}
+
+// Cast acts exactly like the builtin go cast but the return value (if ok)
+// is automatically converted from aliases of the target type.
+//
+// e.g.
+//
+//	type Map map[string]any
+//	nonBuiltinValue := Map{"test": 1}
+//
+//	if builtinValue, ok := Cast[map[string]any](nonBuiltinValue); ok {
+//	  // We have our typed and auto-converted value here
+//	}
+func Cast[X any](target any) (casted X, ok bool) {
+	x := new(X)
+	typ := reflect.TypeOf(*x)
+	if reflect.TypeOf(target).ConvertibleTo(typ) {
+		casted = reflect.ValueOf(target).Convert(typ).Interface().(X)
+		ok = true
+	}
+	return
+}
+
+func BlakeHash(target any) (hash []byte, err error) {
+	bytes, err := cbor.Marshal(target)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+	_hash := blake2b.Sum256(bytes)
+	hash = _hash[:]
+	return
 }

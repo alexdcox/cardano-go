@@ -9,6 +9,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
+	"github.com/tidwall/gjson"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -66,7 +67,88 @@ func (b *Block) Hash() (hash HexBytes, err error) {
 }
 
 type AuxData struct {
-	Map any
+	Value any
+}
+
+func (a *AuxData) JSON() (jsn gjson.Result, err error) {
+	jsnString, err := json.Marshal(a)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	jsn = gjson.ParseBytes(jsnString)
+
+	return
+}
+
+func (a AuxData) MarshalJSON() (bytes []byte, err error) {
+	if m, ok := Cast[KVSlice](a.Value); ok {
+		return json.Marshal(m)
+	}
+
+	return json.Marshal(a.Value)
+}
+
+func (a AuxData) MarshalCBOR() (bytes []byte, err error) {
+	if m, ok := Cast[KVSlice](a.Value); ok {
+		return cbor.Marshal(m)
+	}
+
+	if b, ok := a.Value.([]byte); ok {
+		return b, nil
+	}
+
+	return cbor.Marshal(a.Value)
+}
+
+type KV struct {
+	K any
+	V any
+}
+
+type KVSlice []KV
+
+func (s KVSlice) MarshalCBOR() ([]byte, error) {
+	m := map[any]any{}
+
+	for _, elem := range s {
+		converted := elem.V
+		if v2, ok := Cast[KVSlice](converted); ok {
+			converted = v2
+		}
+		m[elem.K] = converted
+	}
+
+	ret := []byte{byte(0xA0 + len(m))}
+	for k, v := range m {
+		kCbor, err := cbor.Marshal(k)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		vCbor, err := cbor.Marshal(v)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		ret = append(ret, kCbor...)
+		ret = append(ret, vCbor...)
+	}
+
+	return ret, nil
+}
+
+func (s KVSlice) MarshalJSON() ([]byte, error) {
+	v := map[string]any{}
+
+	for _, elem := range s {
+		converted := elem.V
+		if v2, ok := Cast[KVSlice](converted); ok {
+			converted = v2
+		}
+		v[fmt.Sprint(elem.K)] = converted
+	}
+
+	return json.Marshal(v)
 }
 
 func (a *AuxData) UnmarshalCBOR(bytes []byte) (err error) {
@@ -74,13 +156,6 @@ func (a *AuxData) UnmarshalCBOR(bytes []byte) (err error) {
 	err = errors.WithStack(cbor.Unmarshal(bytes, &i))
 	if err != nil {
 		return
-	}
-
-	a.Map = make(map[uint64]any)
-
-	type KV struct {
-		K any
-		V any
 	}
 
 	var mapToKVArray func(v any) any
@@ -110,7 +185,7 @@ func (a *AuxData) UnmarshalCBOR(bytes []byte) (err error) {
 			}
 			return ret
 		case reflect.Map:
-			ret := []KV{}
+			ret := KVSlice{}
 			for _, mk := range reflectV.MapKeys() {
 				mv := reflectV.MapIndex(mk)
 				ret = append(ret, KV{
@@ -121,7 +196,7 @@ func (a *AuxData) UnmarshalCBOR(bytes []byte) (err error) {
 			return ret
 
 		case reflect.Struct:
-			ret := []KV{}
+			ret := KVSlice{}
 			for i := 0; i < reflectV.NumField(); i++ {
 				fieldName := reflectV.Type().Field(i).Name
 				fieldJsonTag := reflectV.Type().Field(i).Tag.Get("json")
@@ -155,7 +230,7 @@ func (a *AuxData) UnmarshalCBOR(bytes []byte) (err error) {
 		return fmt.Sprintf("%v", v)
 	}
 
-	a.Map = mapToKVArray(i)
+	a.Value = mapToKVArray(i)
 
 	return
 }
@@ -189,41 +264,43 @@ type BlockHeader struct {
 }
 
 type TransactionBody struct {
-	Inputs                []TransactionInput                            `cbor:"0,keyasint" json:"inputs,omitempty"`
-	Outputs               []SubtypeOf[TransactionOutput]                `cbor:"1,keyasint" json:"outputs,omitempty"`
-	Fee                   int64                                         `cbor:"2,keyasint" json:"fee,omitempty"`
-	Ttl                   int64                                         `cbor:"3,keyasint" json:"ttl,omitempty"`
-	Certificates          any                                           `cbor:"4,keyasint" json:"certificates,omitempty"`
-	WithdrawalMap         map[cbor.ByteString]uint64                    `cbor:"5,keyasint" json:"withdrawalMap,omitempty"`
-	UpdateDI              any                                           `cbor:"6,keyasint" json:"updateDI,omitempty"`
-	AuxiliaryDataHash     HexBytes                                      `cbor:"7,keyasint" json:"auxiliaryDataHash,omitempty"`
-	ValidityStartInterval int64                                         `cbor:"8,keyasint" json:"validityStartInterval,omitempty"`
-	MintMap               map[cbor.ByteString]map[cbor.ByteString]int64 `cbor:"9,keyasint" json:"mintMap,omitempty"`
-	ScriptDataHash        HexBytes                                      `cbor:"11,keyasint" json:"scriptDataHash,omitempty"`
-	CollateralInputs      []CollateralInput                             `cbor:"13,keyasint" json:"collateralInputs,omitempty"`
-	RequiredSigners       []HexBytes                                    `cbor:"14,keyasint" json:"requiredSigners,omitempty"`
-	NetworkId             int64                                         `cbor:"15,keyasint" json:"networkId,omitempty"`
-	CollateralReturn      SubtypeOf[CollateralReturn]                   `cbor:"16,keyasint" json:"collateralReturn,omitempty"`
-	TotalCollateral       int64                                         `cbor:"17,keyasint" json:"totalCollateral,omitempty"`
-	ReferenceInputs       []TransactionInput                            `cbor:"18,keyasint" json:"referenceInputs,omitempty"`
-	VotingProcedures      any                                           `cbor:"19,keyasint" json:"votingProcedures,omitempty"`
-	ProposalProcedure     any                                           `cbor:"20,keyasint" json:"proposalProcedure,omitempty"`
-	TreasuryValue         any                                           `cbor:"21,keyasint" json:"treasuryValue,omitempty"`
-	DonationCoin          uint64                                        `cbor:"22,keyasint" json:"donationCoin,omitempty"`
+	Inputs                []TransactionInput                            `cbor:"0,keyasint,omitempty" json:"inputs,omitempty"`
+	Outputs               []SubtypeOf[TransactionOutput]                `cbor:"1,keyasint,omitempty" json:"outputs,omitempty"`
+	Fee                   uint64                                        `cbor:"2,keyasint,omitempty" json:"fee,omitempty"`
+	Ttl                   int64                                         `cbor:"3,keyasint,omitempty" json:"ttl,omitempty"`
+	Certificates          any                                           `cbor:"4,keyasint,omitempty" json:"certificates,omitempty"`
+	WithdrawalMap         map[cbor.ByteString]uint64                    `cbor:"5,keyasint,omitempty" json:"withdrawalMap,omitempty"`
+	UpdateDI              any                                           `cbor:"6,keyasint,omitempty" json:"updateDI,omitempty"`
+	AuxiliaryDataHash     HexBytes                                      `cbor:"7,keyasint,omitempty" json:"auxiliaryDataHash,omitempty"`
+	ValidityStartInterval int64                                         `cbor:"8,keyasint,omitempty" json:"validityStartInterval,omitempty"`
+	MintMap               map[cbor.ByteString]map[cbor.ByteString]int64 `cbor:"9,keyasint,omitempty" json:"mintMap,omitempty"`
+	ScriptDataHash        HexBytes                                      `cbor:"11,keyasint,omitempty" json:"scriptDataHash,omitempty"`
+	CollateralInputs      []CollateralInput                             `cbor:"13,keyasint,omitempty" json:"collateralInputs,omitempty"`
+	RequiredSigners       []HexBytes                                    `cbor:"14,keyasint,omitempty" json:"requiredSigners,omitempty"`
+	NetworkId             int64                                         `cbor:"15,keyasint,omitempty" json:"networkId,omitempty"`
+	CollateralReturn      *SubtypeOf[CollateralReturn]                  `cbor:"16,keyasint,omitempty" json:"collateralReturn,omitempty"`
+	TotalCollateral       int64                                         `cbor:"17,keyasint,omitempty" json:"totalCollateral,omitempty"`
+	ReferenceInputs       []TransactionInput                            `cbor:"18,keyasint,omitempty" json:"referenceInputs,omitempty"`
+	VotingProcedures      any                                           `cbor:"19,keyasint,omitempty" json:"votingProcedures,omitempty"`
+	ProposalProcedure     any                                           `cbor:"20,keyasint,omitempty" json:"proposalProcedure,omitempty"`
+	TreasuryValue         any                                           `cbor:"21,keyasint,omitempty" json:"treasuryValue,omitempty"`
+	DonationCoin          uint64                                        `cbor:"22,keyasint,omitempty" json:"donationCoin,omitempty"`
 }
 
-func (tb *TransactionBody) IterateOutputs(cb func(index int, output TransactionOutputGeneric, err error) error) (err error) {
-	for _, outputSubtypeWrapper := range tb.Outputs {
-		if outputInterface, ok := outputSubtypeWrapper.Subtype.(TransactionOutput); ok {
-			outputGeneric, err2 := outputInterface.Generic()
-			if err2 != nil {
-				return fmt.Errorf("%+v", err2)
-			}
-			for i, o := range outputGeneric {
-				err = cb(i, o, err)
-			}
+func (tb *TransactionBody) IterateOutputs(cb func(index int, output *TransactionOutputGeneric, err error) error) (err error) {
+	for index, outputSubtypeWrapper := range tb.Outputs {
+		output, err2 := new(TransactionOutput).ToGeneric(outputSubtypeWrapper.Subtype)
+		if err2 != nil {
+			err = err2
+			return
+		}
+
+		err = cb(index, output, err)
+		if err != nil {
+			return
 		}
 	}
+
 	return
 }
 
@@ -301,8 +378,52 @@ func (t TransactionOutput) Subtypes() []any {
 	}
 }
 
-func (t TransactionOutput) Generic() (out []TransactionOutputGeneric, err error) {
-	panic("todo")
+func (TransactionOutput) ToGeneric(in any) (out *TransactionOutputGeneric, err error) {
+	switch output := in.(type) {
+	case TransactionOutputA:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.AmountData.Amount,
+		}, nil
+
+	case TransactionOutputB:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.Amount,
+		}, nil
+
+	case TransactionOutputC:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.Amount,
+		}, nil
+
+	case TransactionOutputD:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.AmountData.Amount,
+		}, nil
+
+	case TransactionOutputE:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.AmountData.Amount,
+		}, nil
+
+	case TransactionOutputF:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.AmountData.Amount,
+		}, nil
+
+	case TransactionOutputG:
+		return &TransactionOutputGeneric{
+			Address: output.Address,
+			Amount:  output.Amount,
+		}, nil
+	}
+
+	return nil, errors.Errorf("unknown transaction output type: %T", in)
 }
 
 type AmountData struct {
@@ -382,14 +503,9 @@ type TransactionOutputG struct {
 	Amount  uint64   `json:"amount"`
 }
 
-// TODO: Make sure this works...
 type TransactionOutputGeneric struct {
-	Address  Address
-	Amount   uint64
-	Address2 Address
-	Extra    []any
-	// TODO: Haven't implemented Currency, but it might help differentiate ADA from tokens/subcoins
-	Currency string
+	Address Address
+	Amount  uint64
 }
 
 type TransactionWitnessSet struct {
@@ -435,10 +551,4 @@ type VrfCert struct {
 	_   struct{} `cbor:",toarray"`
 	Pt1 HexBytes `json:"pt1"`
 	Pt2 HexBytes `json:"pt2"`
-}
-
-type WrappedBlock struct {
-	Block  Block
-	Number uint64
-	Point  Point
 }

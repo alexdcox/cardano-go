@@ -73,7 +73,7 @@ func (db *InMemoryDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64
 	return nil
 }
 
-func (db *InMemoryDatabase) GetBlockForTx(txhash string) (blockNumber uint64, err error) {
+func (db *InMemoryDatabase) GetBlockNumForTx(txhash string) (blockNumber uint64, err error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
@@ -83,6 +83,20 @@ func (db *InMemoryDatabase) GetBlockForTx(txhash string) (blockNumber uint64, er
 	}
 
 	return blockNumber, nil
+}
+
+func (db *InMemoryDatabase) GetBlockNumForHash(blockHash string) (blockNumber uint64, err error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	for _, p := range db.points {
+		if p.Point.Hash.String() == blockHash {
+			blockNumber = p.Block
+			return
+		}
+	}
+
+	return 0, sql.ErrNoRows
 }
 
 func (db *InMemoryDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, err error) {

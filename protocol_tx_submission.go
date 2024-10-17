@@ -41,9 +41,10 @@ func (tx *TxSubmission) Hash() (hash HexBytes, err error) {
 }
 
 type TxSubmissionBody struct {
-	Inputs  []TransactionInput             `cbor:"0,keyasint" json:"inputs"`
-	Outputs []SubtypeOf[TransactionOutput] `cbor:"1,keyasint" json:"outputs"`
-	Fee     int                            `cbor:"2,keyasint" json:"fee"`
+	Inputs            []TransactionInput             `cbor:"0,keyasint" json:"inputs"`
+	Outputs           []SubtypeOf[TransactionOutput] `cbor:"1,keyasint" json:"outputs"`
+	Fee               uint64                         `cbor:"2,keyasint" json:"fee"`
+	AuxiliaryDataHash HexBytes                       `cbor:"7,keyasint,omitempty" json:"auxiliaryDataHash,omitempty"`
 }
 
 type TxSubmissionWitness struct {

@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	EraByron Era = iota
+	EraByron Era = iota + 1
 	EraShelley
 	EraAllegra
 	EraMary
@@ -42,6 +42,13 @@ func (e Era) String() string {
 
 func (e Era) Valid() bool {
 	return e >= EraByron && e <= EraConway
+}
+
+func (e Era) RawString() string {
+	if s, ok := EraStringMap[e]; ok {
+		return s
+	}
+	return "Unknown"
 }
 
 func (e *Era) UnmarshalCBOR(data []byte) (err error) {

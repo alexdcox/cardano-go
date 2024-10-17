@@ -11,7 +11,9 @@ type Database interface {
 	GetChunkedBlockSpan() (first, last uint64, err error)
 
 	AddTxsForBlock(txhashes []string, block uint64) (err error)
-	GetBlockForTx(txhash string) (block uint64, err error)
+
+	GetBlockNumForTx(txhash string) (block uint64, err error)
+	GetBlockNumForHash(blockHash string) (block uint64, err error)
 
 	AddBlockPoint(point PointAndBlockNum) (err error)
 	GetBlockPoint(block uint64) (point PointAndBlockNum, err error)

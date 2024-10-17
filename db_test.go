@@ -64,11 +64,11 @@ func TestDatabase(t *testing.T) {
 	err = db.AddTxsForBlock([]string{"somehashA", "somehashB"}, 20)
 	assert.Nil(t, err)
 
-	height, err := db.GetBlockForTx("somehashA")
+	height, err := db.GetBlockNumForTx("somehashA")
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(20), height)
 
-	height, err = db.GetBlockForTx("somehashB")
+	height, err = db.GetBlockNumForTx("somehashB")
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(20), height)
 

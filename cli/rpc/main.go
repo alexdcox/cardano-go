@@ -125,38 +125,38 @@ func main() {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	firstChunkedBlock, lastChunkedBlock, err := db.GetChunkedBlockSpan()
+	startChunkedBlock, endChunkedBlock, err := db.GetChunkedBlockSpan()
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	firstBlockPoint, lastBlockPoint, err := db.GetPointSpan()
+	startBlockPoint, endBlockPoint, err := db.GetPointSpan()
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	log.Info().Msgf("chunk index: %d to %d", firstChunkedBlock, lastChunkedBlock)
+	log.Info().Msgf("chunk index: %d to %d", startChunkedBlock, endChunkedBlock)
 
-	if firstBlockPoint > 0 {
-		log.Info().Msgf("point index: %d to %d", firstBlockPoint, lastBlockPoint)
+	if startBlockPoint > 0 {
+		log.Info().Msgf("point index: %d to %d", startBlockPoint, endBlockPoint)
 	} else {
 		log.Info().Msg("point index: not established")
 	}
 
 	var clientStartPoint PointAndBlockNum
 
-	if firstBlockPoint > 0 && firstBlockPoint <= lastChunkedBlock+1 {
+	if startBlockPoint > 0 && startBlockPoint <= endChunkedBlock+1 {
 		log.Info().Msg("chunks overlap client recorded points, continuing from client tip")
 
-		clientStartPoint, err = db.GetBlockPoint(lastBlockPoint)
+		clientStartPoint, err = db.GetBlockPoint(endBlockPoint)
 		if err != nil {
 			log.Fatal().Msgf("%+v", err)
 		}
 
-	} else {
-		log.Info().Msg("detected gap between chunks and c2n tip, or c2n tip hasn't been established, continuing from chunked tip")
+	} else if endChunkedBlock > 0 {
+		log.Info().Msg("detected gap between chunks and client tip, or client tip hasn't been established, continuing from chunked tip")
 
-		block, err2 := chunkReader.GetBlock(lastChunkedBlock)
+		block, err2 := chunkReader.GetBlock(endChunkedBlock)
 		if err2 != nil {
 			log.Fatal().Msgf("%+v", err2)
 		}
@@ -165,6 +165,8 @@ func main() {
 		if err2 != nil {
 			log.Fatal().Msgf("%+v", err2)
 		}
+	} else {
+		log.Info().Msg("no finalised chunks, assuming connected node is syncing, continuing from node tip")
 	}
 
 	followClient, err := NewClient(&ClientOptions{
@@ -172,7 +174,7 @@ func main() {
 		Network:    Network(config.Network),
 		Database:   db,
 		StartPoint: clientStartPoint,
-		LogLevel:   zerolog.InfoLevel,
+		LogLevel:   zerolog.InfoLevel, // TODO: log level
 	})
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)

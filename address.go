@@ -3,6 +3,7 @@ package cardano
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 
 	ogbech "github.com/btcsuite/btcutil/bech32"
@@ -18,16 +19,7 @@ func (a Address) MarshalJSON() ([]byte, error) {
 }
 
 func (a Address) String() string {
-	// NOTE: There's a mismatch in cardinality between the address header network
-	// bit and the current number of networks. This means we can't reliably use
-	// the address network bit to identify the network, so in this method, we
-	// always assume mainnet.
-
-	encoded, err := a.Bech32String(NetworkMainNet)
-	if err != nil {
-		return "invalid"
-	}
-	return encoded
+	return hex.EncodeToString(a)
 }
 
 func (a Address) Header() (header AddressHeader, err error) {

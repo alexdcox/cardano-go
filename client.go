@@ -37,7 +37,7 @@ func (o *ClientOptions) setDefaults() {
 	}
 
 	if len(o.StartPoint.Point.Hash) == 0 {
-		o.StartPoint = PointAndBlockNum{Point: NewPoint()}
+		o.StartPoint = NewPointAndNum()
 	}
 }
 
@@ -57,7 +57,7 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 		return
 	}
 
-	clientLog := LogAtLevel(zerolog.NoLevel)
+	clientLog := LogAtLevel(options.LogLevel)
 
 	client = &Client{
 		options: options,
@@ -87,6 +87,7 @@ type Client struct {
 	shutdown        bool
 	shutdownWg      *sync.WaitGroup
 	pubsub          PubSubQueue[any]
+	latestEra       Era
 }
 
 func (c *Client) Start() (err error) {
@@ -202,12 +203,9 @@ func (c *Client) followChain() {
 			}
 
 			c.log.Info().Msgf("roll forward: %s", c.tip)
-			c.pubsub.Broadcast(WrappedBlock{
-				Block:  *block,
-				Number: nextTip.Block,
-				Point:  nextTip.Point,
-			})
+			c.pubsub.Broadcast(block)
 			c.tip = nextTip
+			c.latestEra = block.Era
 			requestNext()
 
 		case *MessageRollBackward:
@@ -312,6 +310,16 @@ func (c *Client) handshake() (err error) {
 	return
 }
 
+func (c *Client) restart() {
+	c.Stop()
+	var err error
+	c, err = NewClient(c.options)
+	if err != nil {
+		log.Fatal().Msgf("failed to restart client: %+v", err)
+	}
+	c.Start()
+}
+
 func (c *Client) keepAlive() {
 	cookieBytes := make([]byte, 4)
 	_, _ = rand.Read(cookieBytes)
@@ -320,6 +328,7 @@ func (c *Client) keepAlive() {
 	err := c.SendMessage(&MessageKeepAliveResponse{Cookie: cookie})
 	if err != nil {
 		c.log.Error().Msgf("failed to send keep alive message: %+v", err)
+		c.restart()
 		return
 	}
 }
@@ -556,6 +565,10 @@ func (c *Client) Subscribe(cb func(i any)) func() {
 
 func (c *Client) GetTip() PointAndBlockNum {
 	return c.tip
+}
+
+func (c *Client) GetEra() Era {
+	return c.latestEra
 }
 
 func ReceiveNextOfType[T Message](c *Client) (message T, err error) {

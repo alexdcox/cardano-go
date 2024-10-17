@@ -213,7 +213,6 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 				}
 				return fmt.Sprintf("%x", data[:n])
 			}
-			fmt.Printf("%x\n", data[i:])
 			err = errors.Errorf("expecting batch to have block start 0x8204, first 10 bytes are: %s at index %d", printFirstTenBytesHex(data[i:]), i)
 			for x, t := range test {
 				r.log.Debug().Msgf("\n%d --> %x", x, t)
@@ -234,43 +233,6 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 		}
 
 		bytesRead := len(data[i:]) - len(left)
-
-		var a []any
-		if err = r.cbor.Unmarshal(nextMessage.BlockData, &a); err != nil {
-			fmt.Printf("block data:\n%x\n", nextMessage.BlockData)
-			r.log.Fatal().Msgf("unable to unmarshal block data %+v", errors.WithStack(err))
-		}
-
-		{
-			// THIS CODE BLOCK IS JUST FOR TESTING THAT CBOR DECODE WORKS THE
-			// SAME AS CBOR ENCODE FOR BLOCKS AND TRANSACTIONS.
-
-			if a[0].(uint64) != uint64(EraConway) {
-				fmt.Println("not conway, ignoring")
-			} else {
-
-				block, err3 := nextMessage.Block()
-				if err3 != nil {
-					fmt.Printf("block data:\n%x\n", nextMessage.BlockData)
-					log.Fatal().Msgf("%+v", errors.WithStack(err3))
-				}
-
-				_ = block
-
-				// dataCheck, err3 := cbor.Marshal(block)
-				// if err3 != nil {
-				// 	log.Fatal().Msgf("%+v", errors.WithStack(err3))
-				// }
-				//
-				// if !bytes.Equal(dataCheck, nextMessage.BlockData) {
-				// 	fmt.Printf("block number %d\n", block.Data.Header.Body.Number)
-				// 	fmt.Printf("block slot %d\n", block.Data.Header.Body.Slot)
-				// 	fmt.Printf("block hash %x\n", block.Data.Header.Body.Hash)
-				// 	// TODO: Also check block/tx hash while we're here...
-				// 	log.Fatal().Msgf("expected block data %x, got %x", nextMessage.BlockData, dataCheck)
-				// }
-			}
-		}
 
 		r.log.Trace().Msgf("read block message from buffer[%d:%d/%d]", i, i+bytesRead, len(data))
 

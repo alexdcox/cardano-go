@@ -7,6 +7,7 @@ import (
 
 	"github.com/alexdcox/cardano-go"
 	"github.com/btcsuite/btcutil/bech32"
+	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
 )
 
@@ -22,12 +23,15 @@ func main() {
 	pk := ed25519.NewKeyFromSeed(seed)
 	pub := pk.Public().(ed25519.PublicKey)
 
+	pkCbor, _ := cbor.Marshal(pk[:32])
+
 	fmt.Println("")
-	fmt.Println("Generated new cardano address:")
+	fmt.Println("generated new cardano addresses:")
 	fmt.Println("")
-	fmt.Printf("key type:       ed25519\n")
-	fmt.Printf("private:        %x\n", pk[:32])
-	fmt.Printf("public:         %x\n", pk.Public())
+	fmt.Printf("key type:          ed25519\n")
+	fmt.Printf("private:           %x\n", pk[:32])
+	fmt.Printf("private (cbor):    %x\n", pkCbor)
+	fmt.Printf("public:            %x\n", pk.Public())
 
 	for _, net := range []cardano.Network{
 		cardano.NetworkMainNet,

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/alexdcox/dashutil/base58"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
 )
 

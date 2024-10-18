@@ -2,7 +2,6 @@ package cardano
 
 import (
 	"crypto/ed25519"
-	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,13 +12,16 @@ import (
 	"sync"
 	"time"
 
+	"filippo.io/edwards25519"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
 )
 
 func ExpandEd25519PrivateKey(private *ed25519.PrivateKey) {
 	if len(*private) == 32 {
 		var scalar edwards25519.Scalar
+		// TODO: handle this error
 		_, _ = scalar.SetBytesWithClamping(*private)
 		var p edwards25519.Point
 		p.ScalarBaseMult(&scalar)

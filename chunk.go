@@ -232,11 +232,11 @@ func (r *ChunkReader) WatchChunkFiles() (err error) {
 						chunk.LastBlock-chunk.FirstBlock,
 					)
 				}
-			case err, ok := <-watcher.Errors:
+			case err2, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				log.Println("error:", err)
+				log.Error().Msgf("error in chunk watcher: %+v", err2)
 			}
 		}
 	}()

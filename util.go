@@ -22,7 +22,7 @@ func ExpandEd25519PrivateKey(private *ed25519.PrivateKey) {
 	if len(*private) == 32 {
 		var scalar edwards25519.Scalar
 		// TODO: handle this error
-		_, _ = scalar.SetBytesWithClamping(*private)
+		_ = scalar.SetBytesWithClamping(*private)
 		var p edwards25519.Point
 		p.ScalarBaseMult(&scalar)
 		*private = append(*private, p.Bytes()...)

@@ -35,7 +35,7 @@ require (
 require github.com/mattn/go-colorable v0.1.13 // indirect
 
 require (
-	filippo.io/edwards25519 v1.1.0
+	filippo.io/edwards25519 v1.0.0-beta.2
 	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/gofiber/fiber/v2 v2.52.5
 	github.com/mattn/go-sqlite3 v1.14.5

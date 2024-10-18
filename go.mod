@@ -5,11 +5,9 @@ go 1.21.6
 replace github.com/fxamacker/cbor/v2 => /Users/adc/go/src/github.com/fxamacker/cbor
 
 require (
-	filippo.io/edwards25519 v1.1.0
 	github.com/alexdcox/dashutil v0.0.0-20230613003859-fc4feafd54e5
 	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
 	github.com/cosmos/cosmos-sdk v0.50.7
-	github.com/francoispqt/gojay v1.2.13
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/fxamacker/cbor/v2 v2.6.0
 	github.com/gofiber/fiber/v2 v2.52.5

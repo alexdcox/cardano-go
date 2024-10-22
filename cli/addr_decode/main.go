@@ -19,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	if address == "" {
-		fmt.Println("usage: addr_decode --address KEY")
+		fmt.Println("usage: addr_decode --address BECH32")
 	}
 
 	address = strings.Trim(address, " \"")

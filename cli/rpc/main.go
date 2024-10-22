@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	. "github.com/alexdcox/cardano-go"
 	"github.com/alexdcox/cardano-go/cli/rpc/shared"
@@ -178,6 +179,14 @@ func main() {
 	})
 	if err != nil {
 		log.Fatal().Msgf("%+v", err)
+	}
+
+	for {
+		if pingErr := followClient.Ping(); pingErr == nil {
+			break
+		}
+		log.Info().Msg("unable to connect to node, waiting...")
+		time.Sleep(time.Second)
 	}
 
 	shared.NodeUpdatesToDatabase(followClient, db)

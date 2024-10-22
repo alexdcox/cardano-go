@@ -90,6 +90,14 @@ type Client struct {
 	latestEra       Era
 }
 
+func (c *Client) Ping() (err error) {
+	err = c.dial()
+	if err == nil {
+		c.conn.Close()
+	}
+	return
+}
+
 func (c *Client) Start() (err error) {
 	c.log.Info().Msg("starting client")
 

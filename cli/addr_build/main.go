@@ -10,6 +10,7 @@ import (
 	. "github.com/alexdcox/cardano-go"
 	"github.com/btcsuite/btcutil/bech32"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/pkg/errors"
 )
 
 var log = Log()
@@ -59,8 +60,8 @@ func attemptPrivateHex() bool {
 	}
 
 	fmt.Println("key type:          private | hex")
-	fmt.Printf("key hex:               %x\n", keyBytes)
 	fmt.Printf("key cbor:          %x\n", keyCbor)
+	fmt.Printf("key hex:               %x\n", keyBytes)
 
 	pk := ed25519.NewKeyFromSeed(keyBytes)
 	pub := pk.Public().(ed25519.PublicKey)

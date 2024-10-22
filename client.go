@@ -91,17 +91,18 @@ type Client struct {
 }
 
 func (c *Client) Ping() (err error) {
-	err = c.dial()
-	if err == nil {
-		c.conn.Close()
+	conn, err := c.dial()
+	if err != nil {
+		return errors.WithStack(err)
 	}
+	conn.Close()
 	return
 }
 
 func (c *Client) Start() (err error) {
 	c.log.Info().Msg("starting client")
 
-	err = c.dial()
+	c.conn, err = c.dial()
 	if err != nil {
 		return
 	}
@@ -254,11 +255,12 @@ func (c *Client) Stop() (err error) {
 	return
 }
 
-func (c *Client) dial() (err error) {
+func (c *Client) dial() (conn net.Conn, err error) {
 	c.log.Info().Msgf("dialing node: '%s'", c.options.HostPort)
-	c.conn, err = net.Dial("tcp", c.options.HostPort)
+	conn, err = net.Dial("tcp", c.options.HostPort)
 	if err != nil {
-		return errors.WithStack(err)
+		err = errors.WithStack(err)
+		return
 	}
 	c.log.Info().Msg("connected to node")
 

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -117,82 +118,28 @@ func main() {
 		log.Fatal().Msgf("%+v", err)
 	}
 
-	chunkReader, err := NewChunkReader(config.NodeDataPath, db)
-	if err != nil {
-		log.Fatal().Msgf("%+v", err)
-	}
+	var chunkReader *ChunkReader
+	var followClient *Client
+	var startPoint PointAndBlockNum
 
-	if err = chunkReader.Start(); err != nil {
-		log.Fatal().Msgf("%+v", err)
-	}
-
-	startChunkedBlock, endChunkedBlock, err := db.GetChunkedBlockSpan()
-	if err != nil {
-		log.Fatal().Msgf("%+v", err)
-	}
-
-	startBlockPoint, endBlockPoint, err := db.GetPointSpan()
-	if err != nil {
-		log.Fatal().Msgf("%+v", err)
-	}
-
-	log.Info().Msgf("chunk index: %d to %d", startChunkedBlock, endChunkedBlock)
-
-	if startBlockPoint > 0 {
-		log.Info().Msgf("point index: %d to %d", startBlockPoint, endBlockPoint)
+	if config.NodeDataPath == "" {
+		log.Warn().Msg("node data path not configured, unable to read block data from chunk store")
 	} else {
-		log.Info().Msg("point index: not established")
+		if chunkReader, startPoint, err = startChunkDataStream(db); err != nil {
+			log.Error().Err(err).Msgf("unable to start chunk data stream: %+v", err)
+		}
 	}
 
-	var clientStartPoint PointAndBlockNum
-
-	if startBlockPoint > 0 && startBlockPoint <= endChunkedBlock+1 {
-		log.Info().Msg("chunks overlap client recorded points, continuing from client tip")
-
-		clientStartPoint, err = db.GetBlockPoint(endBlockPoint)
-		if err != nil {
-			log.Fatal().Msgf("%+v", err)
-		}
-
-	} else if endChunkedBlock > 0 {
-		log.Info().Msg("detected gap between chunks and client tip, or client tip hasn't been established, continuing from chunked tip")
-
-		block, err2 := chunkReader.GetBlock(endChunkedBlock)
-		if err2 != nil {
-			log.Fatal().Msgf("%+v", err2)
-		}
-
-		clientStartPoint, err2 = block.PointAndNumber()
-		if err2 != nil {
-			log.Fatal().Msgf("%+v", err2)
-		}
+	if config.NodeHostPort == "" {
+		log.Warn().Msg("node rpc host/port not configured, unable to stream block data from n2n protocol")
 	} else {
-		log.Info().Msg("no finalised chunks, assuming connected node is syncing, continuing from node tip")
-	}
-
-	followClient, err := NewClient(&ClientOptions{
-		HostPort:   config.NodeHostPort,
-		Network:    Network(config.Network),
-		Database:   db,
-		StartPoint: clientStartPoint,
-		LogLevel:   zerolog.InfoLevel, // TODO: log level
-	})
-	if err != nil {
-		log.Fatal().Msgf("%+v", err)
-	}
-
-	for {
-		if pingErr := followClient.Ping(); pingErr == nil {
-			break
+		if followClient, err = startNodeDataStream(db, startPoint); err != nil {
+			log.Error().Err(err).Msgf("unable to start node client: %+v", err)
 		}
-		log.Info().Msg("unable to connect to node, waiting...")
-		time.Sleep(time.Second)
 	}
 
-	shared.NodeUpdatesToDatabase(followClient, db)
-
-	if err = followClient.Start(); err != nil {
-		log.Fatal().Msgf("%+v", err)
+	if chunkReader == nil && followClient == nil {
+		log.Fatal().Msg("no chunk data stream and no client stream, cannot provide block data")
 	}
 
 	httpServer, err := NewHttpRpcServer(config, chunkReader, db, followClient)
@@ -217,4 +164,92 @@ func main() {
 	}
 
 	log.Info().Msg("graceful shutdown complete")
+}
+
+func startChunkDataStream(db Database) (chunkReader *ChunkReader, startPoint PointAndBlockNum, err error) {
+	if chunkReader, err = NewChunkReader(config.NodeDataPath, db); err != nil {
+		return
+	}
+
+	if err = chunkReader.Start(); err != nil {
+		return
+	}
+
+	startChunkedBlock, endChunkedBlock, err := db.GetChunkedBlockSpan()
+	if err != nil {
+		return
+	}
+
+	startBlockPoint, endBlockPoint, err := db.GetPointSpan()
+	if err != nil {
+		return
+	}
+
+	log.Info().Msgf("chunk index: %d to %d", startChunkedBlock, endChunkedBlock)
+
+	if startBlockPoint > 0 {
+		log.Info().Msgf("point index: %d to %d", startBlockPoint, endBlockPoint)
+	} else {
+		log.Info().Msg("point index: not established")
+	}
+
+	if startBlockPoint > 0 && startBlockPoint <= endChunkedBlock+1 {
+		log.Info().Msg("chunks overlap client recorded points, continuing from client tip")
+
+		startPoint, err = db.GetBlockPoint(endBlockPoint)
+		if err != nil {
+			return
+		}
+
+	} else if endChunkedBlock > 0 {
+		log.Info().Msg("detected gap between chunks and client tip, or client tip hasn't been established, continuing from chunked tip")
+
+		block, err2 := chunkReader.GetBlock(endChunkedBlock)
+		if err2 != nil {
+			err = err2
+			return
+		}
+
+		startPoint, err = block.PointAndNumber()
+		if err != nil {
+			return
+		}
+	} else {
+		log.Info().Msg("no finalised chunks, assuming connected node is syncing, continuing from node tip")
+	}
+
+	return
+}
+
+func startNodeDataStream(db Database, startPoint PointAndBlockNum) (client *Client, err error) {
+	client, err = NewClient(&ClientOptions{
+		HostPort:   config.NodeHostPort,
+		Network:    Network(config.Network),
+		Database:   db,
+		StartPoint: startPoint,
+		LogLevel:   zerolog.InfoLevel, // TODO: log level
+	})
+	if err != nil {
+		return
+	}
+
+	waitSeconds := 3
+
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = client.Ping(); err == nil {
+			break
+		}
+		log.Info().Msgf("unable to connect to node (attempt %d), waiting %ds...", attempt, waitSeconds)
+		time.Sleep(time.Duration(waitSeconds) * time.Second)
+		waitSeconds = int(math.Round(float64(waitSeconds) * 1.3))
+	}
+	if err != nil {
+		return
+	}
+
+	shared.NodeUpdatesToDatabase(client, db)
+
+	err = client.Start()
+
+	return
 }

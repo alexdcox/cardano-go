@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	. "github.com/alexdcox/cardano-go"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/btcsuite/btcutil/bech32"
-	"github.com/fxamacker/cbor/v2"
 	"github.com/pkg/errors"
 )
 

@@ -82,10 +82,9 @@ func (r *ChunkReader) writeIndexForChunk(chunk *Chunk) (err error) {
 	return
 }
 
-func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
+func (r *ChunkReader) DetermineChunkRange(skipUntilNumber uint64) (startChunk uint64, endChunk uint64, err error) {
 	log.Info().Msgf("locating chunk files (onwards from chunk %d)...", skipUntilNumber)
 
-	var startChunk, endChunk uint64
 	err = filepath.Walk(r.immutableDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -109,22 +108,13 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 		log.Fatal().Msgf("error walking through directory: %v", err)
 	}
 
-	conwayBlock, conwayChunk, err := r.findFirstConwayBlock(startChunk, endChunk)
-	if err != nil && !errors.Is(err, ErrBlockNotFound) {
+	return
+}
+
+func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
+	startChunk, endChunk, err := r.DetermineChunkRange(skipUntilNumber)
+	if err != nil {
 		return
-	}
-
-	if conwayBlock != nil {
-		log.Info().Msgf("found conway block at %d in chunk %d", conwayBlock.Data.Header.Body.Number, conwayChunk.Number)
-		if conwayChunk.Number > startChunk {
-			startChunk = conwayChunk.Number
-		}
-
-		if startChunk < skipUntilNumber {
-			startChunk = skipUntilNumber
-		}
-	} else {
-		log.Warn().Msg("unable to find conway block in chunk files")
 	}
 
 	if endChunk > startChunk {
@@ -136,7 +126,8 @@ func (r *ChunkReader) LoadChunkFiles(skipUntilNumber uint64) (err error) {
 	var previousChunk *Chunk
 
 	for chunkNumber := startChunk; chunkNumber <= endChunk; chunkNumber++ {
-		chunk, err2 := r.processChunkFile(chunkNumber, chunkNumber != endChunk)
+		log.Info().Msgf("processing chunk file: %05d/%05d", chunkNumber, endChunk)
+		chunk, err2 := r.processChunkFile(chunkNumber, false)
 		if errors.Is(err2, ErrEraBeforeConway) {
 			continue
 		}
@@ -333,26 +324,11 @@ func (r *ChunkReader) readChunkData(data []byte, firstBlockOnly bool) (out *Chun
 			break
 		}
 
-		var a []any
-		rest, err2 := StandardCborDecoder.UnmarshalFirst(data, &a)
-		if err2 != nil {
-			err = errors.WithStack(err2)
-			return
-		}
-
-		if a[0].(uint64) < uint64(EraConway) {
-			data = rest
-			if firstBlockOnly {
-				err = errors.WithStack(ErrEraBeforeConway)
-				return
-			}
-			continue
-		}
-
 		block := &Block{}
 
 		remaining, err2 := StandardCborDecoder.UnmarshalFirst(data, block)
 		if err2 != nil {
+			fmt.Printf("%x\n", data)
 			err = errors.Wrap(err2, "failed to read chunk")
 			return
 		}
@@ -410,52 +386,6 @@ func (r *ChunkReader) WaitForReady() {
 			break
 		}
 	}
-}
-
-func (r *ChunkReader) findFirstConwayBlock(startChunk, endChunk uint64) (conwayBlock *Block, conwayChunk *Chunk, err error) {
-	log.Info().Msgf("locating first conway chunk/block (in %d chunks)...", endChunk-startChunk+1)
-
-	var conwayChunkNum uint64
-
-	if endChunk > startChunk {
-		err = BinarySearchCallback(startChunk, endChunk, func(chunkNumber uint64) (search int, err error) {
-			hasBlocks := func(chunkNumber uint64) bool {
-				if chunk, err2 := r.processChunkFile(chunkNumber, true); err2 == nil {
-					return chunk.Blocks != nil
-				}
-				return false
-			}
-
-			if hasBlocks(chunkNumber) {
-				if hasBlocks(chunkNumber - 1) {
-					return -1, nil
-				} else {
-					conwayChunkNum = chunkNumber
-					return 0, nil
-				}
-			}
-
-			return 1, nil
-		})
-		if err != nil {
-			err = errors.Wrap(ErrBlockNotFound, "failed to find conway chunk")
-			return
-		}
-	}
-
-	conwayChunk, err = r.processChunkFile(conwayChunkNum, false)
-	if err != nil {
-		return
-	}
-
-	if len(conwayChunk.Blocks) < 1 {
-		err = errors.Wrap(ErrBlockNotFound, "conway block not found")
-		return
-	}
-
-	conwayBlock = conwayChunk.Blocks[0]
-
-	return
 }
 
 type ChunkCache struct {

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"golang.org/x/crypto/blake2b"

@@ -1,7 +1,7 @@
 package cardano
 
 import (
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/pkg/errors"
 )
 

@@ -12,7 +12,7 @@ import (
 
 	. "github.com/alexdcox/cardano-go"
 	"github.com/alexdcox/cardano-go/rpcclient"
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/pkg/errors"
@@ -326,7 +326,7 @@ func (s *HttpRpcServer) postBroadcast(c *fiber.Ctx) error {
 	fmt.Println(string(txFile))
 	fmt.Println("-------------------------")
 
-	output, err := s.runCardanoBinaryWithFiles("transaction submit --cardano-mode --tx-file file://tx", []VirtualFile{
+	output, err := s.runCardanoBinaryWithFiles("conway transaction submit --cardano-mode --tx-file file://tx", []VirtualFile{
 		{
 			Name:    "tx",
 			Content: txFile,

@@ -2,7 +2,7 @@ package shared
 
 import (
 	. "github.com/alexdcox/cardano-go"
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 )
 
 var log = Log()

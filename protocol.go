@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
 )

@@ -2,6 +2,7 @@ package cardano
 
 import (
 	"crypto/ed25519"
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 	"time"
 
 	"filippo.io/edwards25519"
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
 )
@@ -22,7 +23,7 @@ func ExpandEd25519PrivateKey(private *ed25519.PrivateKey) {
 	if len(*private) == 32 {
 		var scalar edwards25519.Scalar
 		// TODO: handle this error
-		_ = scalar.SetBytesWithClamping(*private)
+		_, _ = scalar.SetBytesWithClamping(*private)
 		var p edwards25519.Point
 		p.ScalarBaseMult(&scalar)
 		*private = append(*private, p.Bytes()...)
@@ -71,6 +72,46 @@ func IndentCbor(input string) string {
 	}
 
 	return output
+}
+
+type WithCborTag[T any] struct {
+	Tag   int64
+	Value T
+}
+
+func (w WithCborTag[T]) MarshalJSON() ([]byte, error) {
+	return json.Marshal(w.Value)
+}
+
+// TODO: consider Unmarshal JSON?
+
+func (w WithCborTag[T]) UnmarshalCBOR(bytes []byte) error {
+	if bytes[0]-0xC0 > 0 {
+		bytes[0] -= 0xC0
+		_bytes, err := cbor.UnmarshalFirst(bytes, &w.Tag)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		bytes = _bytes
+	}
+
+	return cbor.Unmarshal(bytes, &w.Value)
+}
+
+func (w WithCborTag[T]) MarshalCBOR() (out []byte, err error) {
+	if w.Tag > 0 {
+		out, _ = cbor.Marshal(w.Tag)
+		out[0] += 0xC0
+	}
+
+	value, err := cbor.Marshal(w.Value)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+	out = append(out, value...)
+
+	return
 }
 
 func DirectoryExists(path string) bool {

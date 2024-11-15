@@ -1,7 +1,7 @@
 package cardano
 
 import (
-	"github.com/fxamacker/cbor/v2"
+	"github.com/alexdcox/cbor/v2"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
 )
@@ -26,7 +26,7 @@ type TxSubmission struct {
 	Body          TxSubmissionBody `json:"body"`
 	Witness       any              `json:"witness"`
 	AlonzoEval    bool             `json:"alonzoEval"`
-	AuxiliaryData any              `json:"auxiliaryData"`
+	AuxiliaryData WithCborTag[any] `json:"auxiliaryData"`
 }
 
 func (tx *TxSubmission) Hash() (hash HexBytes, err error) {
@@ -41,10 +41,10 @@ func (tx *TxSubmission) Hash() (hash HexBytes, err error) {
 }
 
 type TxSubmissionBody struct {
-	Inputs            []TransactionInput             `cbor:"0,keyasint" json:"inputs"`
-	Outputs           []SubtypeOf[TransactionOutput] `cbor:"1,keyasint" json:"outputs"`
-	Fee               uint64                         `cbor:"2,keyasint" json:"fee"`
-	AuxiliaryDataHash HexBytes                       `cbor:"7,keyasint,omitempty" json:"auxiliaryDataHash,omitempty"`
+	Inputs            WithCborTag[[]TransactionInput] `cbor:"0,keyasint" json:"inputs"`
+	Outputs           []SubtypeOf[TransactionOutput]  `cbor:"1,keyasint" json:"outputs"`
+	Fee               uint64                          `cbor:"2,keyasint" json:"fee"`
+	AuxiliaryDataHash HexBytes                        `cbor:"7,keyasint,omitempty" json:"auxiliaryDataHash,omitempty"`
 }
 
 type TxSubmissionWitness struct {

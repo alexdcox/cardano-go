@@ -1,7 +1,7 @@
 cardano-go
 _*/
 latest-tip.json
-cardano-rpc.db
-cardano-rpc.db-journal
-cardano.db
-cardano.db-journal
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal

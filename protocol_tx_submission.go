@@ -22,11 +22,11 @@ type MessageRejectTx struct {
 }
 
 type TxSubmission struct {
-	_             struct{}         `cbor:",toarray"`
-	Body          TxSubmissionBody `json:"body"`
-	Witness       any              `json:"witness"`
-	AlonzoEval    bool             `json:"alonzoEval"`
-	AuxiliaryData WithCborTag[any] `json:"auxiliaryData"`
+	_             struct{}            `cbor:",toarray"`
+	Body          TxSubmissionBody    `json:"body"`
+	Witness       TxSubmissionWitness `json:"witness"`
+	AlonzoEval    bool                `json:"alonzoEval"`
+	AuxiliaryData *AuxData            `json:"auxiliaryData"`
 }
 
 func (tx *TxSubmission) Hash() (hash HexBytes, err error) {

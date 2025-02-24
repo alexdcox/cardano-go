@@ -1,21 +1,44 @@
 package cardano
 
 import (
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/blinklabs-io/gouroboros/protocol/common"
 )
 
+type PointRef struct {
+	Slot   uint64 `json:"slot"`
+	Hash   string `json:"hash"`
+	Type   int    `json:"era"`
+	Height uint64 `json:"height"`
+}
+
+type TxRef struct {
+	Hash        string `json:"hash"`
+	BlockHeight uint64 `json:"blockHeight"`
+}
+
+func (pr PointRef) Common() common.Point {
+	return common.Point{
+		Slot: pr.Slot,
+		Hash: HexString(pr.Hash).Bytes(),
+	}
+}
+
 type Database interface {
-	SetChunkRange(chunk, start, end uint64) (err error)
-	GetChunkRange(block uint64) (chunk, start, end uint64, err error)
-	GetChunkSpan() (first, last uint64, err error)
-	GetChunkedBlockSpan() (first, last uint64, err error)
+	AddTxsForBlock(txHashes []string, block uint64) (err error)
+	GetTxs(txHashes []string) (txs []TxRef, err error)
+	GetBlockNumForTx(txHash string) (block uint64, err error)
+	// GetBlockNumForHash(blockHash string) (block uint64, err error)
 
-	AddTxsForBlock(txhashes []string, block uint64) (err error)
+	AddPoints(points []PointRef) (err error)
+	SetPointHeights(updates []PointRef) (err error)
+	GetPointByHash(blockHash string) (point PointRef, err error)
+	GetPointByHeight(height uint64) (point PointRef, err error)
+	GetBoundaryPointBehind(blockHash string) (point PointRef, err error)
+	GetPointsBySlot(slot uint64) (points []PointRef, err error)
+	GetPointsForLastSlot() (points []PointRef, err error)
+	GetPointsForProcessing(batchSize int) (points []PointRef, err error)
+	GetHighestPoint() (point PointRef, err error)
 
-	GetBlockNumForTx(txhash string) (block uint64, err error)
-	GetBlockNumForHash(blockHash string) (block uint64, err error)
-
-	AddBlockPoint(point PointAndBlockNum) (err error)
-	GetBlockPoint(block uint64) (point PointAndBlockNum, err error)
-	GetPointSpan() (firstBlock, lastBlock uint64, err error)
+	HandleRollback(fromSlot uint64) (err error)
+	DetectChainSplit(slot uint64) (isSplit bool, err error)
 }

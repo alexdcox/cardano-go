@@ -8,7 +8,8 @@ import (
 )
 
 const (
-	EraByron Era = iota + 1
+	EraByronEBB Era = iota
+	EraByron
 	EraShelley
 	EraAllegra
 	EraMary
@@ -24,13 +25,14 @@ func (e Era) MarshalJSON() ([]byte, error) {
 }
 
 var EraStringMap = map[Era]string{
-	EraByron:   "Byron",
-	EraShelley: "Shelley",
-	EraAllegra: "Allegra",
-	EraMary:    "Mary",
-	EraAlonzo:  "Alonzo",
-	EraBabbage: "Babbage",
-	EraConway:  "Conway",
+	EraByronEBB: "ByronEBB",
+	EraByron:    "Byron",
+	EraShelley:  "Shelley",
+	EraAllegra:  "Allegra",
+	EraMary:     "Mary",
+	EraAlonzo:   "Alonzo",
+	EraBabbage:  "Babbage",
+	EraConway:   "Conway",
 }
 
 func (e Era) String() string {
@@ -41,7 +43,7 @@ func (e Era) String() string {
 }
 
 func (e Era) Valid() bool {
-	return e >= EraByron && e <= EraConway
+	return e >= EraByronEBB && e <= EraConway
 }
 
 func (e Era) RawString() string {

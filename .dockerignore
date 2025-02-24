@@ -1,0 +1,4 @@
+_cli/
+_data/
+*.db
+*.db.bak

@@ -25,10 +25,16 @@ type MessageProposeVersions struct {
 	VersionMap VersionMap `json:"versionMap"`
 }
 
-type MessageAcceptVersion struct {
+type MessageAcceptVersionNtN struct {
 	WithSubprotocol
 	Version     uint16        `json:"version,omitempty"`
 	VersionData VersionField2 `json:"versionData,omitempty"`
+}
+
+type MessageAcceptVersionNtC struct {
+	WithSubprotocol
+	Version     uint16        `json:"version,omitempty"`
+	VersionData VersionField1 `json:"versionData,omitempty"`
 }
 
 type MessageRefuse struct {

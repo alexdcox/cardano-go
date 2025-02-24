@@ -1,49 +1,54 @@
 package cardano
 
 import (
-	"crypto/rand"
-	"encoding/binary"
+	"database/sql"
+	"fmt"
 	"net"
-	"reflect"
 	"sync"
 	"time"
 
-	"github.com/alexdcox/cbor/v2"
+	ouroboros "github.com/blinklabs-io/gouroboros"
+	"github.com/blinklabs-io/gouroboros/ledger"
+	common2 "github.com/blinklabs-io/gouroboros/ledger/common"
+	"github.com/blinklabs-io/gouroboros/protocol/blockfetch"
+	"github.com/blinklabs-io/gouroboros/protocol/chainsync"
+	"github.com/blinklabs-io/gouroboros/protocol/common"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
-	"golang.org/x/crypto/blake2b"
 )
 
 type ClientOptions struct {
-	HostPort           string
-	Network            Network
-	Database           Database
-	StartPoint         PointAndBlockNum
-	DisableFollowChain bool
-	LogLevel           zerolog.Level
+	NtNHostPort string
+	NtCHostPort string
+	Network     Network
+	Database    Database
+	StartPoint  PointRef
+	// DisableFollowChain bool
+	LogLevel zerolog.Level
 }
 
 func (o *ClientOptions) setDefaults() {
-	if o.HostPort == "" {
-		o.HostPort = defaultClientOptions.HostPort
+	if o.NtNHostPort == "" {
+		o.NtNHostPort = defaultClientOptions.NtNHostPort
+	}
+
+	if o.NtCHostPort == "" {
+		o.NtCHostPort = defaultClientOptions.NtCHostPort
 	}
 
 	if o.Network == "" {
 		o.Network = defaultClientOptions.Network
 	}
 
-	if o.Database == nil {
-		o.Database = NewInMemoryDatabase()
-	}
-
-	if len(o.StartPoint.Point.Hash) == 0 {
-		o.StartPoint = NewPointAndNum()
+	if len(o.StartPoint.Hash) == 0 {
+		o.StartPoint = PointRef{}
 	}
 }
 
 var defaultClientOptions = &ClientOptions{
-	HostPort: "localhost:3000",
-	Network:  NetworkMainNet,
+	NtNHostPort: "localhost:3000",
+	NtCHostPort: "localhost:3001",
+	Network:     NetworkMainNet,
 }
 
 func NewClient(options *ClientOptions) (client *Client, err error) {
@@ -51,6 +56,11 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 		options = &ClientOptions{}
 	}
 	options.setDefaults()
+
+	if options.Database == nil {
+		err = errors.New("database is required")
+		return
+	}
 
 	params, err := options.Network.Params()
 	if err != nil {
@@ -60,15 +70,10 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 	clientLog := LogAtLevel(options.LogLevel)
 
 	client = &Client{
-		options: options,
-		keepAliveCaller: NewPeriodicCaller(time.Second*3, func() {
-			client.keepAlive()
-		}),
-		in:         NewMessageReader(clientLog),
+		Options:    options,
 		params:     params,
 		log:        clientLog,
 		db:         options.Database,
-		pubsub:     NewQueue[any](),
 		shutdownWg: &sync.WaitGroup{},
 	}
 
@@ -76,165 +81,222 @@ func NewClient(options *ClientOptions) (client *Client, err error) {
 }
 
 type Client struct {
-	options         *ClientOptions
-	conn            net.Conn
-	keepAliveCaller *PeriodicCaller
-	in              *MessageReader
-	params          *NetworkParams
-	log             *zerolog.Logger
-	tip             PointAndBlockNum
-	db              Database
-	shutdown        bool
-	shutdownWg      *sync.WaitGroup
-	pubsub          PubSubQueue[any]
-	latestEra       Era
-}
-
-func (c *Client) Ping() (err error) {
-	conn, err := c.dial()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	conn.Close()
-	return
+	Options    *ClientOptions
+	params     *NetworkParams
+	log        *zerolog.Logger
+	db         Database
+	shutdown   bool
+	shutdownWg *sync.WaitGroup
+	latestEra  Era
+	errChan    chan error
+	ntn        *ouroboros.Connection
+	// ntc        *ouroboros.Connection
+	processor  *BlockProcessor
+	startPoint PointRef
+	points     []PointRef
+	tipReached bool
 }
 
 func (c *Client) Start() (err error) {
 	c.log.Info().Msg("starting client")
 
-	c.conn, err = c.dial()
+	c.errChan = make(chan error, 1)
+
+	c.processor, err = NewBlockProcessor(c.db, c.log)
 	if err != nil {
 		return
 	}
 
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go c.beginReadStream(wg)
-	wg.Wait()
-
-	c.shutdownWg.Add(1)
-
-	err = c.handshake()
-	if err != nil {
+	if err = c.connect(); err != nil {
 		return
 	}
 
-	c.keepAliveCaller.Start()
-	c.tip = c.options.StartPoint
+	c.processor.ntn = c.ntn
 
-	if !c.options.DisableFollowChain {
-		go c.followChain()
+	go c.followChain()
+
+	return
+}
+
+func (c *Client) connect() error {
+	opt := c.Options
+	maxAttempts := 10
+	retryDelay := time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		c.log.Info().
+			Str("host", opt.NtNHostPort).
+			Int("attempt", attempt).
+			Int("maxAttempts", maxAttempts).
+			Msg("attempting to dial node-to-node")
+
+		ntnConn, err := net.Dial("tcp", opt.NtNHostPort)
+		if err != nil {
+			if attempt == maxAttempts {
+				c.log.Error().
+					Err(err).
+					Str("host", opt.NtNHostPort).
+					Msg("failed to connect after all attempts")
+				return errors.WithStack(err)
+			}
+
+			c.log.Warn().
+				Err(err).
+				Str("host", opt.NtNHostPort).
+				Int("attempt", attempt).
+				Int("nextAttempt", attempt+1).
+				Dur("retryDelay", retryDelay).
+				Msg("connection attempt failed, retrying after delay")
+
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		c.log.Info().
+			Int("attempt", attempt).
+			Msg("successfully established TCP connection")
+
+		var ouroborosErr error
+		c.ntn, ouroborosErr = ouroboros.New(
+			ouroboros.WithConnection(ntnConn),
+			ouroboros.WithNetworkMagic(uint32(c.params.Magic)),
+			ouroboros.WithNodeToNode(true),
+			ouroboros.WithKeepAlive(true),
+			ouroboros.WithBlockFetchConfig(blockfetch.Config{
+				BlockFunc:     c.processor.onBlock,
+				BatchDoneFunc: c.processor.onBatchDone,
+			}),
+			ouroboros.WithChainSyncConfig(chainsync.Config{
+				RollBackwardFunc: c.onRollBackwards,
+				RollForwardFunc:  c.onRollForwards,
+			}),
+		)
+		if ouroborosErr != nil {
+			ntnConn.Close() // Clean up the connection if Ouroboros initialization fails
+			c.log.Error().
+				Err(ouroborosErr).
+				Msg("failed to initialize Ouroboros client")
+			return errors.WithStack(ouroborosErr)
+		}
+
+		c.log.Info().
+			Str("host", opt.NtNHostPort).
+			Msg("successfully connected to node and initialized Ouroboros")
+
+		return nil
+	}
+
+	return errors.New("failed to open node-to-node connection")
+}
+
+func (c *Client) ntc() (ntc *ouroboros.Connection, err error) {
+	opt := c.Options
+
+	c.log.Debug().Msgf("dialing node-to-client: '%s'", opt.NtCHostPort)
+
+	ntcConn, err := net.Dial("tcp", opt.NtCHostPort)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	ntc, err = ouroboros.New(
+		ouroboros.WithConnection(ntcConn),
+		ouroboros.WithNetworkMagic(uint32(c.params.Magic)),
+		ouroboros.WithKeepAlive(true),
+	)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
 	}
 
 	return
 }
 
+func (c *Client) onRollBackwards(context chainsync.CallbackContext, point common.Point, tip chainsync.Tip) error {
+	if point.Slot > c.startPoint.Slot {
+		c.log.Info().Msgf(
+			"roll backwards: slot: %d | hash: %x",
+			point.Slot,
+			point.Hash,
+		)
+
+		if err := c.processor.HandleRollback(point.Slot); err != nil {
+			return errors.Wrap(err, "failed to handle rollback")
+		}
+	}
+
+	return nil
+}
+
+func (c *Client) onRollForwards(context chainsync.CallbackContext, blockType uint, blockData any, tip chainsync.Tip) error {
+	var point PointRef
+
+	c.latestEra = Era(blockType)
+
+	switch v := blockData.(type) {
+	case ledger.Block:
+		point = PointRef{
+			Slot: v.SlotNumber(),
+			Hash: v.Hash(),
+			Type: int(blockType),
+		}
+	case ledger.BlockHeader:
+		point = PointRef{
+			Slot: v.SlotNumber(),
+			Hash: v.Hash(),
+			Type: int(blockType),
+		}
+	}
+
+	// Check for chain splits
+	if err := c.processor.DetectChainSplit(point.Slot); err != nil {
+		c.log.Error().Err(err).Msg("failed to detect chain split")
+	}
+
+	c.points = append(c.points, point)
+
+	if !c.tipReached && tip.Point.Slot == point.Slot {
+		c.tipReached = true
+		c.log.Info().Msg("node tip reached")
+	}
+
+	if len(c.points) >= BlockBatchSize || c.tipReached {
+		if err := c.db.AddPoints(c.points); err != nil {
+			c.log.Fatal().Msgf("failed to add points: %+v", err)
+		}
+
+		c.processor.TryProcessBlocks()
+		c.points = nil
+	}
+
+	return nil
+}
+
 func (c *Client) followChain() {
-	if c.tip.Point.Slot == 0 {
-		c.log.Info().Msg("no previous or configured tip, following chain from node tip")
+	var hasStartPoint bool
+	startPoint, err := c.db.GetHighestPoint()
+	if err == nil {
+		hasStartPoint = true
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		log.Fatal().Msgf("failed to read db for start point: %+v", err)
+	}
 
-		go func() {
-			err := c.SendMessage(&MessageFindIntersect{Points: []Point{NewPoint()}})
-			if err != nil {
-				c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
-				return
-			}
-		}()
-
-		notFound, err := ReceiveNextOfType[*MessageIntersectNotFound](c)
-		if err != nil {
-			c.log.Error().Msgf("follow chain failure: %+v", err)
-			return
-		}
-
-		c.tip = notFound.Tip
+	syncStart := []common.Point{}
+	if hasStartPoint {
+		c.log.Info().Msgf("syncing from previous point %v", startPoint)
+		syncStart = append(syncStart, common.NewPoint(
+			startPoint.Slot,
+			HexString(startPoint.Hash).Bytes(),
+		))
 	} else {
-		c.log.Info().Msgf("following chain from previous tip: %s", c.tip)
+		c.log.Info().Msg("syncing from genesis block")
 	}
 
-	go func() {
-		err := c.SendMessage(&MessageFindIntersect{Points: []Point{c.tip.Point}})
-		if err != nil {
-			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
-			return
-		}
-	}()
-
-	_, err := ReceiveNextOfType[*MessageIntersectFound](c)
-	if err != nil {
-		c.log.Error().Msgf("follow chain failure: %+v", err)
+	if err := c.ntn.ChainSync().Client.Sync(syncStart); err != nil {
+		c.log.Error().Err(err).Msg("failed to start chain sync")
 		return
 	}
-
-	requestNext := func() (err error) {
-		err = c.SendMessage(&MessageRequestNext{})
-		if err != nil {
-			c.log.Error().Msgf("follow chain failure: %+v", errors.WithStack(err))
-			return
-		}
-		return
-	}
-
-	requestNext()
-
-	c.pubsub.On(func(i any) {
-		message, ok := i.(Message)
-		if !ok {
-			return
-		}
-		switch msg := message.(type) {
-		case *MessageRollForward:
-			var nextTip PointAndBlockNum
-			if a, ok := msg.Data.Subtype.(*MessageRollForwardDataA); ok {
-				hash := blake2b.Sum256(a.BlockHeader)
-
-				header := &BlockHeader{}
-				err = cbor.Unmarshal(a.BlockHeader, &header)
-				if err != nil {
-					log.Fatal().Msgf("%+v", errors.WithStack(err))
-				}
-
-				nextTip = PointAndBlockNum{
-					Block: header.Body.Number,
-					Point: Point{
-						Slot: header.Body.Slot,
-						Hash: hash[:],
-					},
-				}
-			} else {
-				log.Fatal().Msgf("unexpected roll forward message type: %T", msg)
-			}
-
-			block, err2 := c.FetchBlock(nextTip.Point)
-			if err2 != nil {
-				log.Error().Msgf("failed to fetch block post roll forward: %+v", err2)
-				return
-			}
-
-			c.log.Info().Msgf("roll forward: %s", c.tip)
-			c.pubsub.Broadcast(block)
-			c.tip = nextTip
-			c.latestEra = block.Era
-			requestNext()
-
-		case *MessageRollBackward:
-			block, err2 := c.FetchBlock(*msg.Point.Value)
-			if err2 != nil {
-				log.Error().Msgf("failed to fetch block post roll backward: %+v", err2)
-				return
-			}
-			c.tip = PointAndBlockNum{
-				Point: *msg.Point.Value,
-				Block: block.Data.Header.Body.Number,
-			}
-			c.log.Info().Msgf("roll backward: %s", c.tip)
-			// TODO: Roll backwards logic (clean db)
-			requestNext()
-
-		case *MessageAwaitReply:
-			// do as they say, patiently wait
-		}
-	})
 }
 
 func (c *Client) Stop() (err error) {
@@ -243,357 +305,167 @@ func (c *Client) Stop() (err error) {
 		return
 	}
 	c.shutdown = true
-	c.log.Info().Msg("stopping client")
 
-	c.keepAliveCaller.Stop()
+	c.log.Info().Msg("closing node connection")
 
-	err = errors.WithStack(c.conn.Close())
-	if err != nil {
+	if err = errors.WithStack(c.ntn.Close()); err != nil {
 		return
 	}
 
 	return
 }
 
-func (c *Client) dial() (conn net.Conn, err error) {
-	c.log.Info().Msgf("dialing node: '%s'", c.options.HostPort)
-	conn, err = net.Dial("tcp", c.options.HostPort)
+func (c *Client) GetTip() (point PointRef, err error) {
+	point, err = c.db.GetHighestPoint()
+	if errors.Is(err, sql.ErrNoRows) {
+		// Return an empty point if we don't have a tip yet
+		err = nil
+	}
+	return
+}
+
+type UtxoWithHeight struct {
+	TxHash  string `json:"txHash"`
+	Address string `json:"address"`
+	Amount  uint64 `json:"amount"`
+	Index   uint64 `json:"index"`
+	Height  uint64 `json:"height"`
+}
+
+func (c *Client) GetUtxoForAddress(address string) (utxos []UtxoWithHeight, err error) {
+	ntc, err := c.ntc()
+	if err != nil {
+		return
+	}
+
+	ledgerAddress, err := ledger.NewAddress(address)
 	if err != nil {
 		err = errors.WithStack(err)
 		return
 	}
-	c.log.Info().Msg("connected to node")
+
+	utxosRsp, err := ntc.LocalStateQuery().Client.GetUTxOByAddress([]ledger.Address{ledgerAddress})
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	// Filter out utxos from transactions the node is aware of that we haven't processed yet.
+
+	txHashesMap := map[string]struct{}{}
+	for id, _ := range utxosRsp.Results {
+		txHashesMap[id.Hash.String()] = struct{}{}
+	}
+	var txHashesSlice []string
+	for txHash, _ := range txHashesMap {
+		txHashesSlice = append(txHashesSlice, txHash)
+	}
+
+	recordedTxs, err := c.db.GetTxs(txHashesSlice)
+	if err != nil {
+		return
+	}
+	recordedTxsMap := make(map[string]TxRef)
+	for _, tx := range recordedTxs {
+		recordedTxsMap[tx.Hash] = tx
+	}
+
+	for id, utxo := range utxosRsp.Results {
+		if ref, exists := recordedTxsMap[id.Hash.String()]; exists {
+			utxos = append(utxos, UtxoWithHeight{
+				TxHash:  id.Hash.String(),
+				Address: utxo.Address().String(),
+				Amount:  utxo.Amount(),
+				Index:   uint64(id.Idx),
+				Height:  ref.BlockHeight,
+			})
+		}
+	}
+
+	fmt.Printf("node saw %d utxos | we see %d utxos\n", len(utxosRsp.Results), len(utxos))
 
 	return
 }
 
-func (c *Client) beginReadStream(wg *sync.WaitGroup) {
-	wg.Done()
-	for {
-		if c.shutdown {
-			return
-		}
-
-		buf := make([]byte, 402)
-		n, err := c.conn.Read(buf)
-		if err != nil {
-			if c.shutdown {
-				// NOTE: throwing away last read, client shutting down
-				return
-			}
-			c.log.Error().Msgf("conn read error: %+v", errors.WithStack(err))
-			// TODO: If the connection was reset by peer, we need to renegotiate the handshake.
-			//       The error string looks like:
-			//       read tcp 127.0.0.1:50430->127.0.0.1:3000: read: connection reset by peer
-			return
-		}
-
-		messages, err := c.in.Read(buf[:n])
-		if err != nil {
-			c.log.Error().Msgf("%+v", errors.WithStack(err))
-			return
-		}
-		for _, message := range messages {
-			c.log.Debug().Msgf("message in: %T", message)
-			c.pubsub.Broadcast(message)
-		}
+func (c *Client) GetProtocolParams() (params common2.ProtocolParameters, err error) {
+	ntc, err := c.ntc()
+	if err != nil {
+		return
 	}
+
+	params, err = ntc.LocalStateQuery().Client.GetCurrentProtocolParams()
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+	return
 }
 
-func (c *Client) handshake() (err error) {
-	c.log.Info().Msg("begin handshake")
-	err = c.SendMessage(&MessageProposeVersions{
-		VersionMap: defaultVersionMap(c.params.Magic),
-	})
+func (c *Client) FetchLatestBlock() (block ledger.Block, err error) {
+	point, err := c.db.GetHighestPoint()
 	if err != nil {
 		return
 	}
 
-	acceptVersionMsg, err := ReceiveNextOfType[*MessageAcceptVersion](c)
-	if err != nil {
-		err = errors.Wrap(err, "handshake failed")
-		return
-	}
-
-	c.log.Info().Msgf("handshake ok, node accepted version %d", acceptVersionMsg.Version)
+	block, err = c.ntn.BlockFetch().Client.GetBlock(point.Common())
+	err = errors.WithStack(err)
 
 	return
 }
 
-func (c *Client) restart() {
-	c.Stop()
-	var err error
-	c, err = NewClient(c.options)
-	if err != nil {
-		log.Fatal().Msgf("failed to restart client: %+v", err)
-	}
-	c.Start()
-}
-
-func (c *Client) keepAlive() {
-	cookieBytes := make([]byte, 4)
-	_, _ = rand.Read(cookieBytes)
-	cookie := binary.BigEndian.Uint16(cookieBytes)
-
-	err := c.SendMessage(&MessageKeepAliveResponse{Cookie: cookie})
-	if err != nil {
-		c.log.Error().Msgf("failed to send keep alive message: %+v", err)
-		c.restart()
-		return
-	}
-}
-
-func GetCardanoTimestamp() uint32 {
-	mono := time.Now().UnixNano()
-	microSeconds := mono / 1000
-	return uint32(microSeconds & 0xFFFFFFFF)
-}
-
-func EncodeCardanoTimestamp(timestamp uint32) []byte {
-	bytes := make([]byte, 4)
-	binary.LittleEndian.PutUint32(bytes, timestamp)
-	return bytes
-}
-
-func (c *Client) SendSegment(segment *Segment) (err error) {
-	writeBytes, err := segment.MarshalDataItem()
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	for _, msg := range segment.messages {
-		c.log.Debug().Msgf(
-			"message out: %T, protocol: %d, subprotocol: %d",
-			msg,
-			segment.Protocol,
-			msg.GetSubprotocol())
-	}
-	c.log.Trace().Msgf("write: %x", writeBytes)
-
-	n, err := c.conn.Write(writeBytes)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	c.keepAliveCaller.Postpone()
-
-	if n < len(writeBytes) {
-		err = errors.Errorf(
-			"write error: expected to write %d bytes, managed %d",
-			len(writeBytes),
-			n,
-		)
-	}
-
+func (c *Client) GetBlockByPoint(point PointRef) (block ledger.Block, err error) {
+	block, err = c.ntn.BlockFetch().Client.GetBlock(point.Common())
+	err = errors.WithStack(err)
 	return
 }
 
-func (c *Client) SendMessage(message Message) (err error) {
-	if c.shutdown {
-		err = errors.Errorf("dropping message %T, client shutting down", message)
-		return
-	}
-	if c.conn == nil {
-		return errors.New("no connection")
-	}
-
-	if subprotocol, ok := MessageSubprotocolMap[reflect.TypeOf(message)]; ok {
-		message.SetSubprotocol(subprotocol)
-	} else {
-		return errors.Errorf("no subprotocol defined for message type %T", message)
-	}
-
-	// timestamp := GetCardanoTimestamp()
-	// c.log.Debug().Msg("Cardano Timestamp: %d\n", timestamp)
-
-	// encodedTimestamp := EncodeCardanoTimestamp(timestamp)
-	// c.log.Debug().Msg("Encoded Timestamp: %v\n", encodedTimestamp)
-
-	segment := &Segment{
-		Timestamp: 0,
-		Direction: DirectionOut,
-	}
-
-	err = segment.AddMessage(message)
+func (c *Client) GetBlockByHeight(height uint64) (block ledger.Block, err error) {
+	point, err := c.db.GetPointByHeight(height)
 	if err != nil {
 		return
 	}
-
-	return c.SendSegment(segment)
-}
-
-func (c *Client) FetchTip() (tip PointAndBlockNum, err error) {
-	err = c.SendMessage(&MessageFindIntersect{
-		Points: []Point{
-			{
-				Slot: 0,
-				Hash: make([]byte, 32),
-			},
-		},
-	})
-	if err != nil {
-		return
-	}
-
-	intersectNotFound, err := ReceiveNextOfType[*MessageIntersectNotFound](c)
-	if err != nil {
-		return
-	}
-
-	tip = intersectNotFound.Tip
-
+	block, err = c.ntn.BlockFetch().Client.GetBlock(point.Common())
+	err = errors.WithStack(err)
 	return
 }
 
-func (c *Client) FetchLatestBlock() (block *Block, err error) {
-	tip, err := c.FetchTip()
+func (c *Client) GetTransaction(hash string) (tx ledger.Transaction, block ledger.Block, err error) {
+	height, err := c.db.GetBlockNumForTx(hash)
 	if err != nil {
 		return
 	}
-
-	return c.FetchBlock(tip.Point)
-}
-
-func (c *Client) FetchBlock(point Point) (block *Block, err error) {
-	blocks, err := c.FetchRange(point, point)
+	point, err := c.db.GetPointByHeight(height)
 	if err != nil {
 		return
 	}
-	if len(blocks) != 1 {
-		err = errors.Errorf("expected 1 block, got %d", len(blocks))
+	block, err = c.ntn.BlockFetch().Client.GetBlock(point.Common())
+	if err != nil {
 		return
 	}
-	block = blocks[0]
-	return
-}
-
-func (c *Client) FetchRange(from, to Point) (blocks []*Block, err error) {
-	done := make(chan struct{})
-	var mu sync.Mutex
-
-	cleanup := c.pubsub.On(func(i any) {
-		message, ok := i.(Message)
-		if !ok {
-			return
+	for _, blockTx := range block.Transactions() {
+		if blockTx.Hash() == hash {
+			tx = blockTx
 		}
-		switch msg := message.(type) {
-		case *MessageStartBatch:
-			return
+	}
+	if tx == nil {
+		err = errors.WithStack(ErrTransactionNotFound)
+	}
+	return
+}
 
-		case *MessageBlock:
-			var block *Block
-			block, err = msg.Block()
-			if err != nil {
-				return
-			}
-			mu.Lock()
-			block.Raw = msg.BlockData
-			blocks = append(blocks, block)
-			mu.Unlock()
-			return
-
-		case *MessageNoBlocks, *MessageBatchDone:
-			close(done)
-			return
-		}
-	})
-	defer cleanup()
-
-	err = c.SendMessage(&MessageRequestRange{
-		From: from,
-		To:   to,
-	})
+func (c *Client) SubmitTx(signedTx []byte) (err error) {
+	ntc, err := c.ntc()
 	if err != nil {
 		return
 	}
 
-	select {
-	case <-done:
-		return
-	case <-time.After(60 * time.Second): // TODO: can a batch take this long?
-		err = errors.New("timeout waiting for range fetch to complete")
+	return errors.WithStack(ntc.LocalTxSubmission().Client.SubmitTx(6, signedTx))
+}
+
+func (c *Client) GetHeight() (height PointRef, err error) {
+	if c.processor.highestPoint.Hash == "" {
+		err = errors.WithStack(ErrPointNotFound)
 		return
 	}
-}
-
-func (c *Client) ReceiveNext() (message Message, err error) {
-	cbChan := make(chan Message, 1)
-	var cbClosed bool
-	cbClose := c.pubsub.On(func(i any) {
-		msg, ok := i.(Message)
-		if !ok {
-			return
-		}
-		if cbClosed {
-			return
-		}
-		cbClosed = true
-		cbChan <- msg
-		close(cbChan)
-	})
-	defer cbClose()
-
-	select {
-	case message = <-cbChan:
-		return
-
-	case <-time.After(time.Second * 5):
-		err = errors.New("timeout while waiting for node response")
-		return
-	}
-
-	return
-}
-
-func (c *Client) ReceiveNextOfType(message *Message) (err error) {
-	cbChan := make(chan struct{})
-	cbClose := c.pubsub.On(func(i any) {
-		if reflect.TypeOf(*message) != reflect.TypeOf(i) {
-			return
-		}
-		*message = i.(Message)
-		cbChan <- struct{}{}
-		close(cbChan)
-	})
-	defer cbClose()
-
-	select {
-	case <-cbChan:
-		return
-
-	case <-time.After(time.Second * 5):
-		err = errors.Errorf("timeout while waiting for node response: %s", reflect.TypeOf(*message))
-		return
-	}
-
-	return
-}
-
-func (c *Client) Subscribe(cb func(i any)) func() {
-	return c.pubsub.On(cb)
-}
-
-func (c *Client) GetTip() PointAndBlockNum {
-	return c.tip
-}
-
-func (c *Client) GetEra() Era {
-	return c.latestEra
-}
-
-func ReceiveNextOfType[T Message](c *Client) (message T, err error) {
-	var msg Message = *new(T)
-	err = c.ReceiveNextOfType(&msg)
-	if err != nil {
-		return
-	}
-
-	if typed, ok := msg.(T); ok {
-		message = typed
-		return
-	}
-
-	err = errors.Errorf("expected next message of type %T, got %T", *new(T), msg)
-
-	return
+	return c.processor.highestPoint, nil
 }

@@ -197,6 +197,7 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 			messages = append(messages, &MessageBatchDone{})
 
 			if len(data[i:]) > 0 {
+				// TODO: I actually think this is pretty crucial now
 				// We're dropping extraneous `data[i:]` after the batch
 				// done message (could be parsed in future)
 				i += len(data[i:])
@@ -314,6 +315,8 @@ func (r *MessageReader) nextMessage(data []byte) (message Message, remaining []b
 		err = errors.Wrapf(err, "failed to unmarshal message %T from data: %x", message, read)
 		return
 	}
+
+	message.SetRaw(read)
 
 	return
 }

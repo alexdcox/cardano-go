@@ -82,16 +82,31 @@ func (a *AuxData) JSON() (jsn gjson.Result, err error) {
 	return
 }
 
-func (a AuxData) MarshalJSON() (bytes []byte, err error) {
+func (a *AuxData) MarshalJSON() (bytes []byte, err error) {
+	if a.Value == nil {
+		return []byte("{}"), nil
+	}
+
 	if m, ok := Cast[KVSlice](a.Value); ok {
+		// If we've extracted the cbor.Tag, just return the content and drop the tag number
+		if len(m) == 2 && m[1].K == "Content" {
+			return json.Marshal(m[1].V)
+		}
 		return json.Marshal(m)
 	}
 
 	return json.Marshal(a.Value)
 }
 
-func (a AuxData) MarshalCBOR() (bytes []byte, err error) {
+func (a *AuxData) MarshalCBOR() (bytes []byte, err error) {
 	if m, ok := Cast[KVSlice](a.Value); ok {
+		if len(m) == 2 && m[1].K == "Content" {
+
+			return cbor.Marshal(cbor.Tag{
+				Number:  m[0].V.(uint64),
+				Content: m[1].V,
+			})
+		}
 		return cbor.Marshal(m)
 	}
 

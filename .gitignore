@@ -5,3 +5,4 @@ latest-tip.json
 *.db-journal
 *.sqlite
 *.sqlite-journal
+cbor

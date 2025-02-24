@@ -1,17 +1,37 @@
 package cardano
 
 import (
-	"fmt"
+	"github.com/pkg/errors"
 )
 
 var (
-	ErrNotChunkFile          = fmt.Errorf("not a chunk file")
-	ErrEraBeforeConway       = fmt.Errorf("era before conway")
-	ErrChunkBlockMissing     = fmt.Errorf("chunk doesn't contain expected block")
-	ErrDataDirectoryNotFound = fmt.Errorf("data directory not found")
-	ErrBlockNotFound         = fmt.Errorf("block not found")
-	ErrTransactionNotFound   = fmt.Errorf("transaction not found")
-	ErrNotEnoughFunds        = fmt.Errorf("not enough funds")
-	ErrInvalidPublicKeyType  = fmt.Errorf("invalid public key type")
-	ErrRpcFailed             = fmt.Errorf("rpc failed")
+	ErrNotChunkFile          = errors.New("not a chunk file")
+	ErrVersionRejected       = errors.New("ntn version rejected")
+	ErrEraBeforeConway       = errors.New("era before conway")
+	ErrChunkBlockMissing     = errors.New("chunk doesn't contain expected block")
+	ErrDataDirectoryNotFound = errors.New("data directory not found")
+	ErrPointNotFound         = errors.New("point not found")
+	ErrBlockNotFound         = errors.New("block not found")
+	ErrTransactionNotFound   = errors.New("transaction not found")
+	ErrNotEnoughFunds        = errors.New("not enough funds")
+	ErrInvalidPublicKeyType  = errors.New("invalid public key type")
+	ErrInvalidCliResponse    = errors.New("invalid cardano-cli response")
+	ErrRpcFailed             = errors.New("rpc failed")
+	ErrNodeCommandFailed     = errors.New("node command failed")
 )
+
+var AllErrors = []error{
+	ErrNotChunkFile,
+	ErrVersionRejected,
+	ErrEraBeforeConway,
+	ErrChunkBlockMissing,
+	ErrDataDirectoryNotFound,
+	ErrPointNotFound,
+	ErrBlockNotFound,
+	ErrTransactionNotFound,
+	ErrNotEnoughFunds,
+	ErrInvalidPublicKeyType,
+	ErrInvalidCliResponse,
+	ErrRpcFailed,
+	ErrNodeCommandFailed,
+}

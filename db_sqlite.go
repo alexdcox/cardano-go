@@ -2,8 +2,10 @@ package cardano
 
 import (
 	"database/sql"
+	"strings"
 	"sync"
 
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 )
 
@@ -41,25 +43,28 @@ func NewSqlLiteDatabase(path string) (db *SqlLiteDatabase, err error) {
 
 func (s *SqlLiteDatabase) initTables() (err error) {
 	queries := []string{
-		`CREATE TABLE IF NOT EXISTS chunks (
-			chunk INTEGER PRIMARY KEY,
-			start INTEGER,
-			end INTEGER
-		)`,
-		`CREATE TABLE IF NOT EXISTS txs (
+		`CREATE TABLE IF NOT EXISTS tx (
 			txhash TEXT PRIMARY KEY,
 			block_number INTEGER
 		)`,
-		`CREATE TABLE IF NOT EXISTS tip (
-			slot INTEGER PRIMARY KEY,
-			hash TEXT,
-			number INTEGER
-		)`,
-		`CREATE TABLE IF NOT EXISTS points (
-			number INTEGER PRIMARY KEY,
+		`CREATE TABLE IF NOT EXISTS point (
 			slot INTEGER,
-			hash TEXT
+			hash TEXT,
+			type INTEGER,
+			height INTEGER DEFAULT -1,
+			PRIMARY KEY (slot, hash)
 		)`,
+		`CREATE TABLE IF NOT EXISTS point_rollback (
+			slot INTEGER,
+			hash TEXT,
+			height INTEGER,
+			rollback_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (slot, hash)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_point_height ON point(height)`,
+		`CREATE INDEX IF NOT EXISTS idx_point_slot ON point(slot)`,
+		`CREATE INDEX IF NOT EXISTS idx_point_hash ON point(hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_rollback_slot ON point_rollback(slot)`,
 	}
 
 	for i, query := range queries {
@@ -73,59 +78,8 @@ func (s *SqlLiteDatabase) initTables() (err error) {
 	return
 }
 
-func (s *SqlLiteDatabase) SetChunkRange(chunk, start, end uint64) (err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if end <= start {
-		err = errors.Errorf("invalid chunk range %d to %d", start, end)
-		return
-	}
-
-	var count int
-	err = s.db.QueryRow(`
-		SELECT COUNT(*) FROM chunks 
-		WHERE
-			(
-				(:start BETWEEN start AND end) OR
-				(:end BETWEEN start AND end)
-			)
-	    AND chunk IS NOT :chunk`,
-		sql.Named("chunk", chunk),
-		sql.Named("start", start),
-		sql.Named("end", end),
-	).Scan(&count)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	if count > 0 {
-		return errors.Errorf("new range (%d, %d) overlaps with existing ranges", start, end)
-	}
-
-	_, err = s.db.Exec(
-		`INSERT INTO chunks (chunk, start, end) VALUES (?, ?, ?)
-		ON CONFLICT DO UPDATE SET chunk=excluded.chunk, start=excluded.start, end=excluded.end`,
-		chunk, start, end)
-
-	return errors.WithStack(err)
-}
-
-func (s *SqlLiteDatabase) GetChunkRange(blockNumber uint64) (chunk, start, end uint64, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	err = s.db.
-		QueryRow(
-			"SELECT chunk, start, end FROM chunks WHERE start <= ? AND end >= ?",
-			blockNumber, blockNumber).
-		Scan(&chunk, &start, &end)
-
-	err = errors.WithStack(err)
-
-	return
-}
-
-func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) (err error) {
+// HandleRollback moves points to the rollback table and cleans up related data
+func (s *SqlLiteDatabase) HandleRollback(fromSlot uint64) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -135,7 +89,106 @@ func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) 
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("INSERT OR REPLACE INTO txs (txhash, block_number) VALUES (?, ?)")
+	// Move points to rollback table
+	_, err = tx.Exec(`
+		INSERT INTO point_rollback (slot, hash, height)
+		SELECT slot, hash, height
+		FROM point
+		WHERE slot >= ?`,
+		fromSlot)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	// Delete points that were rolled back
+	_, err = tx.Exec("DELETE FROM point WHERE slot >= ?", fromSlot)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	// Clean up any transactions from rolled back blocks
+	_, err = tx.Exec(`
+		DELETE FROM tx 
+		WHERE block_number IN (
+			SELECT height 
+			FROM point_rollback 
+			WHERE slot >= ? AND height >= 0
+		)`, fromSlot)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	err = tx.Commit()
+	return errors.WithStack(err)
+}
+
+// DetectChainSplit checks if we have multiple points for the same slot where type isn't a boundary
+func (s *SqlLiteDatabase) DetectChainSplit(slot uint64) (isSplit bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var count int
+	err = s.db.QueryRow(`
+		SELECT COUNT(*) 
+		FROM point 
+		WHERE slot = ? AND type != ?`, // assuming type 0 is boundary block
+		slot, 1).Scan(&count)
+
+	if err != nil {
+		return false, errors.WithStack(err)
+	}
+
+	return count > 1, nil
+}
+
+// GetPointsForProcessing returns points ready for block fetching, respecting BlocksUntilConfirmed-distance from tip
+func (s *SqlLiteDatabase) GetPointsForProcessing(batchSize int) (points []PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(`
+		SELECT slot, hash, type 
+		FROM point 
+		WHERE height = -1 
+		ORDER BY slot ASC 
+		LIMIT ?`,
+		batchSize)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	defer rows.Close()
+
+	points = make([]PointRef, 0)
+	for rows.Next() {
+		var point PointRef
+		if err = rows.Scan(&point.Slot, &point.Hash, &point.Type); err != nil {
+			return nil, errors.WithStack(err)
+		}
+		points = append(points, point)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return
+}
+
+func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) (err error) {
+	if len(txhashes) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO tx (txhash, block_number) VALUES (?, ?)")
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -152,110 +205,310 @@ func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) 
 	return errors.WithStack(err)
 }
 
+func (s *SqlLiteDatabase) GetTxs(txHashes []string) (txs []TxRef, err error) {
+	if len(txHashes) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `SELECT txhash, block_number FROM tx WHERE txhash IN (?` + strings.Repeat(",?", len(txHashes)-1) + `)`
+
+	// Convert []string to []interface{} for query parameters
+	args := make([]interface{}, len(txHashes))
+	for i, hash := range txHashes {
+		args[i] = hash
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		err = errors.Wrap(err, "failed to query transactions")
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		tx := TxRef{}
+		if err2 := rows.Scan(&tx.Hash, &tx.BlockHeight); err != nil {
+			err = errors.Wrap(err2, "failed to scan row")
+			return
+		}
+		txs = append(txs, tx)
+	}
+
+	if err = rows.Err(); err != nil {
+		err = errors.Wrap(err, "error during row iteration")
+		return
+	}
+
+	return
+}
+
 func (s *SqlLiteDatabase) GetBlockNumForTx(txhash string) (blockNumber uint64, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	err = s.db.QueryRow("SELECT block_number FROM txs WHERE txhash = ?", txhash).Scan(&blockNumber)
+	err = s.db.QueryRow("SELECT block_number FROM tx WHERE txhash = ?", txhash).Scan(&blockNumber)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = errors.Wrapf(ErrTransactionNotFound, "tx not found by hash %s", txhash)
+		return
+	}
 	err = errors.WithStack(err)
 
 	return
 }
 
-func (s *SqlLiteDatabase) GetBlockNumForHash(blockHash string) (blockNumber uint64, err error) {
+// func (s *SqlLiteDatabase) GetBlockNumForHash(blockHash string) (blockNumber uint64, err error) {
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
+//
+// 	err = s.db.QueryRow("SELECT height FROM point WHERE hash = ? AND height >= 0", blockHash).Scan(&blockNumber)
+// 	if errors.Is(err, sql.ErrNoRows) {
+// 		err = errors.Wrapf(ErrBlockNotFound, "block not found by hash %s", blockHash)
+// 		return
+// 	}
+// 	err = errors.WithStack(err)
+//
+// 	return
+// }
+
+func (s *SqlLiteDatabase) AddPoints(points []PointRef) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	err = s.db.QueryRow("SELECT number FROM points WHERE hash = ?", blockHash).Scan(&blockNumber)
-	err = errors.WithStack(err)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer tx.Rollback()
 
-	return
-}
+	stmt, err := tx.Prepare(`
+		INSERT OR REPLACE INTO point (slot, hash, type, height) 
+		VALUES (?, ?, ?, COALESCE((SELECT height FROM point WHERE slot = ? AND hash = ?), -1))
+	`)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer stmt.Close()
 
-func (s *SqlLiteDatabase) GetChunkSpan() (lowestChunk, highestChunk uint64, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	for _, point := range points {
+		_, err = stmt.Exec(
+			point.Slot,
+			point.Hash,
+			point.Type,
+			point.Slot,
+			point.Hash,
+		)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+	}
 
-	query := `
-		SELECT 
-			COALESCE(MIN(chunk), 0) as lowest_chunk,
-			COALESCE(MAX(chunk), 0) as highest_chunk
-		FROM chunks
-	`
-
-	err = s.db.QueryRow(query).Scan(&lowestChunk, &highestChunk)
-	err = errors.WithStack(err)
-
-	return
-}
-
-func (s *SqlLiteDatabase) GetChunkedBlockSpan() (lowestBlock, highestBlock uint64, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	query := `
-		SELECT 
-			COALESCE(MIN(start), 0) as lowest_block,
-			COALESCE(MAX(end), 0) as highest_block
-		FROM chunks
-	`
-
-	err = s.db.QueryRow(query).Scan(&lowestBlock, &highestBlock)
-	err = errors.WithStack(err)
-
-	return
-}
-
-func (s *SqlLiteDatabase) GetPointSpan() (lowestBlock, highestBlock uint64, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	query := `
-		SELECT 
-			COALESCE(MIN(number), 0) as lowest_block,
-			COALESCE(MAX(number), 0) as highest_block
-		FROM points
-	`
-
-	err = s.db.QueryRow(query).Scan(&lowestBlock, &highestBlock)
-	err = errors.WithStack(err)
-
-	return
-}
-
-func (s *SqlLiteDatabase) AddBlockPoint(p PointAndBlockNum) (err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, err = s.db.Exec(
-		"INSERT OR REPLACE INTO points (number, slot, hash) VALUES (?, ?, ?)",
-		p.Block,
-		p.Point.Slot,
-		p.Point.Hash.String(),
-	)
-
+	err = tx.Commit()
 	return errors.WithStack(err)
 }
 
-func (s *SqlLiteDatabase) GetBlockPoint(blockNumber uint64) (p PointAndBlockNum, err error) {
+func (s *SqlLiteDatabase) SetPointHeights(updates []PointRef) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var hash string
+	tx, err := s.db.Begin()
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer tx.Rollback()
 
-	err = s.db.
-		QueryRow("SELECT slot, hash FROM points WHERE number = ?", blockNumber).
-		Scan(&p.Point.Slot, &hash)
+	stmt, err := tx.Prepare("UPDATE point SET height = ? WHERE hash = ?")
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer stmt.Close()
+
+	for _, update := range updates {
+		_, err = stmt.Exec(update.Height, update.Hash)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	err = tx.Commit()
+	return errors.WithStack(err)
+}
+
+// func (s *SqlLiteDatabase) GetHighestBlock() (height uint64, err error) {
+// 	s.mu.Lock()
+// 	defer s.mu.Unlock()
+//
+// 	err = s.db.QueryRow("SELECT COALESCE(MAX(height), 0) FROM point WHERE height >= 0").Scan(&height)
+// 	if errors.Is(err, sql.ErrNoRows) {
+// 		err = errors.Wrap(ErrPointNotFound, "no points with height")
+// 		return
+// 	}
+// 	err = errors.WithStack(err)
+//
+// 	return
+// }
+
+func (s *SqlLiteDatabase) GetHighestPoint() (point PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err = s.db.QueryRow(`
+        SELECT slot, hash, type, height
+        FROM point 
+        WHERE height = (
+            SELECT MAX(height) 
+            FROM point 
+            WHERE height >= 0
+        ) AND type != 0
+        LIMIT 1`,
+	).Scan(&point.Slot, &point.Hash, &point.Type, &point.Height)
+
+	err = errors.WithStack(err)
+
+	return
+}
+
+func (s *SqlLiteDatabase) GetPointByHash(blockHash string) (point PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err = s.db.QueryRow(
+		"SELECT slot, hash, type, height FROM point WHERE hash = ?",
+		blockHash,
+	).Scan(&point.Slot, &point.Hash, &point.Type, &point.Height)
+
 	if errors.Is(err, sql.ErrNoRows) {
-		err = errors.Wrap(ErrBlockNotFound, "block point not found")
+		err = errors.Wrapf(ErrBlockNotFound, "point not found by block hash %s", blockHash)
 		return
 	} else if err != nil {
 		err = errors.WithStack(err)
 		return
 	}
 
-	p.Block = blockNumber
-	p.Point.Hash = HexString(hash).Bytes()
+	return
+}
+
+func (s *SqlLiteDatabase) GetPointByHeight(height uint64) (point PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	err = s.db.QueryRow(
+		"SELECT slot, hash, type, height FROM point WHERE height = ?",
+		height,
+	).Scan(&point.Slot, &point.Hash, &point.Type, &point.Height)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		err = errors.Wrapf(ErrPointNotFound, "point not found by height %d", height)
+		return
+	} else if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	return
+}
+
+func (s *SqlLiteDatabase) GetBoundaryPointBehind(blockHash string) (point PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// First get the slot of the provided block
+	var targetSlot uint64
+	err = s.db.QueryRow(
+		"SELECT slot FROM point WHERE hash = ?",
+		blockHash,
+	).Scan(&targetSlot)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		err = errors.Wrapf(ErrPointNotFound, "boundary point not found by behind hash %s", blockHash)
+		return
+	} else if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+
+	// Now find the closest unprocessed point before this slot
+	err = s.db.QueryRow(`
+        SELECT slot, hash, type, height 
+        FROM point 
+        WHERE slot < ? AND height = -1
+        ORDER BY slot DESC 
+        LIMIT 1`,
+		targetSlot,
+	).Scan(&point.Slot, &point.Hash, &point.Type, &point.Height)
+
+	err = errors.WithStack(err)
+
+	return
+}
+
+func (s *SqlLiteDatabase) GetPointsBySlot(slot uint64) (points []PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(
+		"SELECT slot, hash, type FROM point WHERE slot = ?",
+		slot,
+	)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	defer rows.Close()
+
+	points = make([]PointRef, 0)
+	for rows.Next() {
+		var point PointRef
+		if err = rows.Scan(&point.Slot, &point.Hash, &point.Type); err != nil {
+			return nil, errors.WithStack(err)
+		}
+		points = append(points, point)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	if len(points) == 0 {
+		err = errors.Wrap(ErrBlockNotFound, "no points found for slot")
+		return
+	}
+
+	return
+}
+
+func (s *SqlLiteDatabase) GetPointsForLastSlot() (points []PointRef, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rows, err := s.db.Query(`
+		SELECT slot, hash, type 
+		FROM point 
+		WHERE slot = (SELECT MAX(slot) FROM point)
+	`)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	defer rows.Close()
+
+	points = make([]PointRef, 0)
+	for rows.Next() {
+		var point PointRef
+		if err = rows.Scan(&point.Slot, &point.Hash, &point.Type); err != nil {
+			return nil, errors.WithStack(err)
+		}
+		points = append(points, point)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	if len(points) == 0 {
+		err = errors.New("no points found in database")
+		return
+	}
 
 	return
 }

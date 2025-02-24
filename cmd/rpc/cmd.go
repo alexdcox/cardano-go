@@ -121,12 +121,21 @@ func runCommandWithVirtualFiles(command string, params string, env []string, vir
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 
+	fmt.Println("--------------------------------------------------")
+	fmt.Println("CMD IN")
+	fmt.Println(cmd.String())
+	fmt.Println("--------------------------------------------------")
+
 	err := cmd.Start()
 	if err != nil {
 		return nil, fmt.Errorf("failed to start command: %v", err)
 	}
 
 	err = cmd.Wait()
+	fmt.Println("--------------------------------------------------")
+	fmt.Println("CMD OUT")
+	fmt.Println(string(out.Bytes()))
+	fmt.Println("--------------------------------------------------")
 	if err != nil {
 		return out.Bytes(), fmt.Errorf("command failed: %v", err)
 	}

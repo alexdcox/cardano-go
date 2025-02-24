@@ -1,8 +1,11 @@
 package cardano
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,9 +18,41 @@ import (
 
 	"filippo.io/edwards25519"
 	"github.com/alexdcox/cbor/v2"
+	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/blake2b"
 )
+
+type HexString string
+
+func (hs HexString) Bytes() (b []byte) {
+	b, _ = hex.DecodeString(string(hs))
+	return
+}
+
+type Base58Bytes []byte
+
+func (b Base58Bytes) String() string {
+	return base58.Encode(b)
+}
+
+func (b Base58Bytes) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, b)), nil
+}
+
+type HexBytes []byte
+
+func (b HexBytes) String() string {
+	return hex.EncodeToString(b)
+}
+
+func (b HexBytes) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, b)), nil
+}
+
+func (b HexBytes) Equals(o HexBytes) bool {
+	return bytes.Equal(b, o)
+}
 
 func ExpandEd25519PrivateKey(private *ed25519.PrivateKey) {
 	if len(*private) == 32 {
@@ -85,7 +120,9 @@ func (w WithCborTag[T]) MarshalJSON() ([]byte, error) {
 
 // TODO: consider Unmarshal JSON?
 
-func (w WithCborTag[T]) UnmarshalCBOR(bytes []byte) error {
+func (w *WithCborTag[T]) UnmarshalCBOR(bytes []byte) error {
+	fmt.Printf("%x\n", bytes)
+
 	if bytes[0]-0xC0 > 0 {
 		bytes[0] -= 0xC0
 		_bytes, err := cbor.UnmarshalFirst(bytes, &w.Tag)
@@ -93,6 +130,7 @@ func (w WithCborTag[T]) UnmarshalCBOR(bytes []byte) error {
 			return errors.WithStack(err)
 		}
 		bytes = _bytes
+		fmt.Printf("%x\n", bytes)
 	}
 
 	return cbor.Unmarshal(bytes, &w.Value)
@@ -290,4 +328,23 @@ func BlakeHash(target any) (hash []byte, err error) {
 	_hash := blake2b.Sum256(bytes)
 	hash = _hash[:]
 	return
+}
+
+func ChunkString(s string, chunkSize int) []string {
+	if chunkSize <= 0 {
+		return nil
+	}
+
+	var chunks []string
+	runes := []rune(s)
+
+	for i := 0; i < len(runes); i += chunkSize {
+		end := i + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+		chunks = append(chunks, string(runes[i:end]))
+	}
+
+	return chunks
 }

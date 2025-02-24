@@ -1,19 +1,27 @@
 package cardano
 
 import (
-	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
 
 	"github.com/alexdcox/cbor/v2"
-	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
 )
 
 type Protocol uint16
 type Subprotocol uint16
+
+const (
+	// MinUtxoBytes The smallest size in bytes a cardano transaction can be.
+	//
+	// It was originally 160 as defined here:
+	// https://github.com/IntersectMBO/cardano-ledger/blob/a6f276a9e3df45d69be3a593d3db6cd9dfaa7a02/eras/babbage/impl/src/Cardano/Ledger/Babbage/TxOut.hs#L680
+	//
+	// However, the smallest conway transaction I've been able to build was 197 bytes.
+	MinUtxoBytes         = 197
+	MaxAuxDataStringSize = 64
+)
 
 const (
 	ProtocolHandshake Protocol = iota
@@ -51,6 +59,22 @@ const (
 	SubprotocolBlockFetchBlock
 	SubprotocolBlockFetchBatchDone
 )
+
+const (
+	SubprotocolLocalStateAcquire               = 0
+	SubprotocolLocalStateAcquired              = 1
+	SubprotocolLocalStateFailure               = 2
+	SubprotocolLocalStateQuery                 = 3
+	SubprotocolLocalStateResult                = 4
+	SubprotocolLocalStateRelease               = 5
+	SubprotocolLocalStateReacquire             = 6
+	SubprotocolLocalStateDone                  = 7
+	SubprotocolLocalStateAcquireVolatileTip    = 8
+	SubprotocolLocalStateReacquireVolatileTip  = 9
+	SubprotocolLocalStateAcquireImmutableTip   = 10
+	SubprotocolLocalStateReacquireImmutableTip = 11
+)
+
 const (
 	SubprotocolKeepAliveEcho Subprotocol = iota
 	SubprotocolKeepAlivePing
@@ -71,7 +95,7 @@ var ProtocolStringMap = map[Protocol]string{
 var ProtocolMessageMap = map[Protocol]map[Subprotocol]Message{
 	ProtocolHandshake: {
 		SubprotocolHandshakeProposedVersion: &MessageProposeVersions{},
-		SubprotocolHandshakeAcceptVersion:   &MessageAcceptVersion{},
+		SubprotocolHandshakeAcceptVersion:   &MessageAcceptVersionNtC{},
 		SubprotocolHandshakeRefuse:          &MessageRefuse{},
 		SubprotocolHandshakeQueryReply:      &MessageQueryReply{},
 	},
@@ -97,6 +121,20 @@ var ProtocolMessageMap = map[Protocol]map[Subprotocol]Message{
 		SubprotocolKeepAliveEcho: &MessageKeepAliveResponse{},
 		SubprotocolKeepAlivePing: &MessageKeepAlive{},
 	},
+	ProtocolLocalState: {
+		SubprotocolLocalStateAcquire:               &MessageLocalStateAcquire{},
+		SubprotocolLocalStateAcquired:              &MessageLocalStateAcquired{},
+		SubprotocolLocalStateFailure:               &MessageLocalStateFailure{},
+		SubprotocolLocalStateQuery:                 &MessageLocalStateQuery{},
+		SubprotocolLocalStateResult:                &MessageLocalStateResult{},
+		SubprotocolLocalStateRelease:               &MessageLocalStateRelease{},
+		SubprotocolLocalStateReacquire:             &MessageLocalStateReacquire{},
+		SubprotocolLocalStateDone:                  &MessageLocalStateDone{},
+		SubprotocolLocalStateAcquireVolatileTip:    &MessageLocalStateAcquireVolatileTip{},
+		SubprotocolLocalStateReacquireVolatileTip:  &MessageLocalStateReacquireVolatileTip{},
+		SubprotocolLocalStateAcquireImmutableTip:   &MessageLocalStateAcquireImmutableTip{},
+		SubprotocolLocalStateReacquireImmutableTip: &MessageLocalStateReacquireImmutableTip{},
+	},
 	ProtocolLocalTx: {},
 }
 
@@ -120,7 +158,7 @@ var MessageProtocolMap = map[reflect.Type]Protocol{
 	reflect.TypeOf(&MessageProposeVersions{}):   ProtocolHandshake,
 	reflect.TypeOf(&MessageRefuse{}):            ProtocolHandshake,
 	reflect.TypeOf(&MessageQueryReply{}):        ProtocolHandshake,
-	reflect.TypeOf(&MessageAcceptVersion{}):     ProtocolHandshake,
+	reflect.TypeOf(&MessageAcceptVersionNtN{}):  ProtocolHandshake,
 	reflect.TypeOf(&MessageRequestNext{}):       ProtocolChainSync,
 	reflect.TypeOf(&MessageAwaitReply{}):        ProtocolChainSync,
 	reflect.TypeOf(&MessageRollForward{}):       ProtocolChainSync,
@@ -143,7 +181,7 @@ var MessageSubprotocolMap = map[reflect.Type]Subprotocol{
 	reflect.TypeOf(&MessageProposeVersions{}):   SubprotocolHandshakeProposedVersion,
 	reflect.TypeOf(&MessageRefuse{}):            SubprotocolHandshakeRefuse,
 	reflect.TypeOf(&MessageQueryReply{}):        SubprotocolHandshakeQueryReply,
-	reflect.TypeOf(&MessageAcceptVersion{}):     SubprotocolHandshakeAcceptVersion,
+	reflect.TypeOf(&MessageAcceptVersionNtN{}):  SubprotocolHandshakeAcceptVersion,
 	reflect.TypeOf(&MessageRequestNext{}):       SubprotocolChainSyncRequestNext,
 	reflect.TypeOf(&MessageAwaitReply{}):        SubprotocolChainSyncAwaitReply,
 	reflect.TypeOf(&MessageRollForward{}):       SubprotocolChainSyncRollForward,
@@ -186,44 +224,16 @@ func (p Protocol) String() string {
 	}
 }
 
-type HexString string
-
-func (hs HexString) Bytes() (b []byte) {
-	b, _ = hex.DecodeString(string(hs))
-	return
-}
-
-type Base58Bytes []byte
-
-func (b Base58Bytes) String() string {
-	return base58.Encode(b)
-}
-
-func (b Base58Bytes) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf(`"%s"`, b)), nil
-}
-
-type HexBytes []byte
-
-func (b HexBytes) String() string {
-	return hex.EncodeToString(b)
-}
-
-func (b HexBytes) MarshalJSON() ([]byte, error) {
-	return []byte(fmt.Sprintf(`"%s"`, b)), nil
-}
-
-func (b HexBytes) Equals(o HexBytes) bool {
-	return bytes.Equal(b, o)
-}
-
 type Message interface {
 	SetSubprotocol(Subprotocol)
 	GetSubprotocol() Subprotocol
+	Raw() []byte
+	SetRaw(raw []byte)
 }
 
 type WithSubprotocol struct {
 	_           struct{}    `cbor:",toarray"`
+	_raw        []byte      `json:"-" cbor:"-"`
 	Subprotocol Subprotocol `json:"subprotocol"`
 }
 
@@ -233,6 +243,14 @@ func (w *WithSubprotocol) SetSubprotocol(subprotocol Subprotocol) {
 
 func (w *WithSubprotocol) GetSubprotocol() (subprotocol Subprotocol) {
 	return w.Subprotocol
+}
+
+func (w *WithSubprotocol) Raw() []byte {
+	return w._raw
+}
+
+func (w *WithSubprotocol) SetRaw(raw []byte) {
+	w._raw = raw
 }
 
 type Point struct {

@@ -483,6 +483,8 @@ func (s *HttpRpcServer) postTransactionBroadcast(c *fiber.Ctx) error {
 		return err
 	}
 
+	fmt.Printf("txhex: %s\n", req.TxHex)
+
 	txFile, _ := json.Marshal(map[string]any{
 		// "type":        fmt.Sprintf("Witnessed Tx %sEra", s.followClient.GetEra().RawString()),
 		"type":        fmt.Sprintf("Witnessed Tx ConwayEra"),

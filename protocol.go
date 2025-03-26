@@ -370,11 +370,5 @@ type CBORUnmarshalError struct {
 }
 
 func (c CBORUnmarshalError) Error() string {
-	var a any
-	if err := cbor.Unmarshal(c.Bytes, &a); err == nil {
-		fmt.Println(a)
-	}
-
-	f, _, _ := cbor.DiagnoseFirst(c.Bytes)
-	return fmt.Sprintf("unable to unmarshal %T from cbor:\n%x\n%v\n%s", c.Target, c.Bytes, a, f)
+	return fmt.Sprintf("unable to unmarshal %T from cbor:\n%x", c.Target, c.Bytes)
 }

@@ -139,7 +139,7 @@ func EncodeAddress(publicKey []byte, net Network, typ AddressType) (addr Address
 
 	if len(publicKey) != ed25519.PublicKeySize {
 		err = errors.Errorf(
-			"expected a %d length ed25519 private key, got %d bytes",
+			"expected a %d length ed25519 public key, got %d bytes",
 			ed25519.PublicKeySize,
 			len(publicKey))
 		return

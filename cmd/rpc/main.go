@@ -32,7 +32,7 @@ func (c *_config) Load() (err error) {
 	flag.StringVar(&c.Network, "network", "", "Set network (mainnet|preprod|privnet)")
 	flag.StringVar(&c.RpcHostPort, "rpchostport", "localhost:3002", "Set host:port for the http/rpc listener")
 	flag.StringVar(&c.SocketPath, "socketpath", "/opt/cardano/ipc/socket", "Path to the node socket")
-	flag.StringVar(&c.LogLevel, "loglevel", "", "Set the log level (trace|debug|info|warn|error|fatal)")
+	flag.StringVar(&c.LogLevel, "loglevel", "", "Set the log level (trace|debug|info|warn|error|fatal) Can also be set via the CARDANO_RPC_LOG_LEVEL environment variable")
 	flag.Parse()
 
 	// c.Cardano = &Config{}
@@ -56,7 +56,12 @@ func main() {
 	}
 
 	if config.LogLevel == "" {
-		config.LogLevel = "info"
+		envLogLevel := os.Getenv("CARDANO_RPC_LOG_LEVEL")
+		if envLogLevel != "" {
+			config.LogLevel = envLogLevel
+		} else {
+			config.LogLevel = "info"
+		}
 	}
 	logLevel, err := zerolog.ParseLevel(config.LogLevel)
 	if err != nil {

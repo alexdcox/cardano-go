@@ -121,16 +121,17 @@ func (w WithCborTag[T]) MarshalJSON() ([]byte, error) {
 // TODO: consider Unmarshal JSON?
 
 func (w *WithCborTag[T]) UnmarshalCBOR(bytes []byte) error {
-	if bytes[0]-0xC0 > 0 {
-		bytes[0] -= 0xC0
-		_bytes, err := cbor.UnmarshalFirst(bytes, &w.Tag)
+	b := make([]byte, len(bytes))
+	copy(b, bytes)
+	if b[0]-0xC0 > 0 {
+		b[0] -= 0xC0
+		_bytes, err := cbor.UnmarshalFirst(b, &w.Tag)
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		bytes = _bytes
+		b = _bytes
 	}
-
-	return cbor.Unmarshal(bytes, &w.Value)
+	return cbor.Unmarshal(b, &w.Value)
 }
 
 func (w WithCborTag[T]) MarshalCBOR() (out []byte, err error) {

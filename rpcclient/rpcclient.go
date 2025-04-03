@@ -162,7 +162,7 @@ type ProtocolOut struct {
 }
 
 type GetStatusOut struct {
-	Height   PointRef    `json:"height"`
+	Tip      PointRef    `json:"tip"`
 	Protocol ProtocolOut `json:"fees"`
 }
 
@@ -266,6 +266,11 @@ type TxResponse struct {
 type RpcError struct {
 	Err     string `json:"error"`
 	Details string `json:"details"`
+}
+
+type PublicKeyToAddress struct {
+	Network      Network `json:"network"`
+	PublicKeyHex string  `json:"publicKeyHex"`
 }
 
 func (r *RpcError) Error() string {

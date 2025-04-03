@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -64,6 +65,7 @@ func (s *HttpRpcServer) Start() (err error) {
 	s.app.Post("/tx/broadcast", s.postTransactionBroadcast)
 	s.app.Get("/status", s.getStatus)
 	s.app.Get("/height", s.getHeight)
+	s.app.Post("/tools/pubkey-to-address", s.postPubkeyToAddress)
 
 	// TODO: clean up this dangerous command
 	s.app.Post("/cli", s.postCli)
@@ -182,7 +184,7 @@ func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 	pp := protocol.Utxorpc()
 
 	out := rpcclient.GetStatusOut{
-		Height: highestPoint,
+		Tip: highestPoint,
 		Protocol: rpcclient.ProtocolOut{
 			CoinsPerUtxoByte:  pp.CoinsPerUtxoByte,
 			MaxTxSize:         pp.MaxTxSize,
@@ -475,6 +477,38 @@ func (s *HttpRpcServer) getHeight(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(height)
+}
+
+func (s *HttpRpcServer) postPubkeyToAddress(c *fiber.Ctx) error {
+	var req rpcclient.PublicKeyToAddress
+	if err := s.unmarshalJson(c, &req); err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	log.Debug().Msgf(
+		"converting public key to address | network '%s' | address hex '%s'",
+		req.Network,
+		req.PublicKeyHex)
+
+	if !req.Network.Valid() {
+		return s.errorResponse(c, ErrNetworkInvalid)
+	}
+
+	publicKeyBytes, err := hex.DecodeString(req.PublicKeyHex)
+	if err != nil {
+		return s.errorResponse(c, ErrInvalidPublicKey)
+	}
+
+	address, err := EncodeAddress(publicKeyBytes, req.Network, AddressTypePayment)
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	addrBech32, err := address.Bech32String(req.Network)
+
+	log.Debug().Msgf("encoded address: '%s'", addrBech32)
+
+	return c.JSON(map[string]any{"address": addrBech32})
 }
 
 func (s *HttpRpcServer) postTransactionBroadcast(c *fiber.Ctx) error {

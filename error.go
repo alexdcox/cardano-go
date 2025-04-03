@@ -14,10 +14,12 @@ var (
 	ErrBlockNotFound         = errors.New("block not found")
 	ErrTransactionNotFound   = errors.New("transaction not found")
 	ErrNotEnoughFunds        = errors.New("not enough funds")
+	ErrInvalidPublicKey      = errors.New("invalid public key")
 	ErrInvalidPublicKeyType  = errors.New("invalid public key type")
 	ErrInvalidCliResponse    = errors.New("invalid cardano-cli response")
 	ErrRpcFailed             = errors.New("rpc failed")
 	ErrNodeCommandFailed     = errors.New("node command failed")
+	ErrNetworkInvalid        = errors.New("network invalid")
 )
 
 var AllErrors = []error{

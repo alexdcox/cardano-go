@@ -14,6 +14,7 @@ var (
 	ErrBlockNotFound         = errors.New("block not found")
 	ErrTransactionNotFound   = errors.New("transaction not found")
 	ErrNotEnoughFunds        = errors.New("not enough funds")
+	ErrInvalidPrivateKey     = errors.New("invalid private key")
 	ErrInvalidPublicKey      = errors.New("invalid public key")
 	ErrInvalidPublicKeyType  = errors.New("invalid public key type")
 	ErrInvalidCliResponse    = errors.New("invalid cardano-cli response")

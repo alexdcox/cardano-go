@@ -62,6 +62,7 @@ func (s *HttpRpcServer) Start() (err error) {
 	s.app.Get("/tx/:hash", s.getTransaction)
 	s.app.Get("/tx/:hash/block", s.getTransactionBlock)
 	s.app.Post("/tx/build", s.postTransactionBuild)
+	s.app.Post("/tx/sign", s.postTransactionSign)
 	s.app.Post("/tx/broadcast", s.postTransactionBroadcast)
 	s.app.Get("/status", s.getStatus)
 	s.app.Get("/height", s.getHeight)
@@ -465,6 +466,75 @@ func (s *HttpRpcServer) postTransactionBuild(c *fiber.Ctx) error {
 		EstimatedFee: fee,
 		RawHex:       buildJson.Get("cborHex").String(),
 		Hash:         HexString(strings.TrimSpace(string(hashResult))),
+	})
+}
+
+func (s *HttpRpcServer) postTransactionSign(c *fiber.Ctx) error {
+	in := &rpcclient.TransactionSignIn{}
+	if err := s.unmarshalJson(c, &in); err != nil {
+		return err
+	}
+
+	args := []string{
+		"conway transaction sign",
+		"--tx-body-file file://tx",
+		"--signing-key-file file://key",
+		"--out-file /dev/stdout",
+	}
+
+	txJson, err := json.Marshal(map[string]any{
+		"type":        "Unwitnessed Tx ConwayEra",
+		"description": "Ledger Cddl Format",
+		"cborHex":     in.Tx,
+	})
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	keyBytes, err := hex.DecodeString(in.PrivateKeyHex)
+	if err != nil {
+		return s.errorResponse(c, ErrInvalidPrivateKey)
+	}
+
+	keyCborBytes, err := cbor.Marshal(keyBytes)
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	keyCborHex := hex.EncodeToString(keyCborBytes)
+
+	keyJson, err := json.Marshal(map[string]any{
+		"type":        "PaymentSigningKeyShelley_ed25519",
+		"description": "Payment Signing Key",
+		"cborHex":     keyCborHex,
+	})
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	files := []VirtualFile{
+		{
+			Name:    "tx",
+			Content: txJson,
+		},
+		{
+			Name:    "key",
+			Content: keyJson,
+		},
+	}
+
+	signResult, err := s.runCardanoBinaryWithFiles(strings.Join(args, " "), files)
+	if err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
+			"details": string(signResult),
+			"error":   ErrNodeCommandFailed.Error(),
+		})
+	}
+
+	signJson := gjson.ParseBytes(signResult)
+
+	return c.JSON(&rpcclient.TransactionSignOut{
+		Tx: HexString(signJson.Get("cborHex").String()),
 	})
 }
 

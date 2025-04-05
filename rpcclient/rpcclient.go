@@ -195,6 +195,15 @@ type TransactionBuildOut struct {
 	EstimatedFee uint64    `json:"estimatedFee"`
 }
 
+type TransactionSignIn struct {
+	Tx            HexString `json:"tx"`
+	PrivateKeyHex string    `json:"privateKeyHex"`
+}
+
+type TransactionSignOut struct {
+	Tx HexString `json:"tx"`
+}
+
 func (o *TransactionBuildOut) Submission() (submission *TxSubmission, err error) {
 	if o == nil {
 		return nil, errors.New("transaction build out is nil")

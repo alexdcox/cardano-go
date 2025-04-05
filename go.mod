@@ -28,7 +28,6 @@ require github.com/mattn/go-colorable v0.1.13 // indirect
 
 require (
 	filippo.io/edwards25519 v1.1.0
-	github.com/Salvionied/apollo v1.1.0
 	github.com/alexdcox/cbor/v2 v2.0.0
 	github.com/blinklabs-io/gouroboros v0.108.2
 	github.com/gofiber/fiber/v2 v2.52.5
@@ -37,23 +36,18 @@ require (
 )
 
 require (
-	github.com/Salvionied/cbor/v2 v2.6.0 // indirect
 	github.com/andybalholm/brotli v1.0.5 // indirect
 	github.com/btcsuite/btcd/btcutil v1.1.6 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
 	github.com/jinzhu/copier v0.4.0 // indirect
-	github.com/maestro-org/go-sdk v1.2.0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/tidwall/match v1.0.3 // indirect
 	github.com/tidwall/pretty v1.0.2 // indirect
-	github.com/tyler-smith/go-bip39 v1.1.0 // indirect
 	github.com/utxorpc/go-codegen v0.16.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.51.0 // indirect
 	github.com/valyala/tcplisten v1.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1 // indirect
-	golang.org/x/text v0.21.0 // indirect
 	google.golang.org/protobuf v1.36.3 // indirect
 )
 

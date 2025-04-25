@@ -195,6 +195,17 @@ type TransactionBuildOut struct {
 	EstimatedFee uint64    `json:"estimatedFee"`
 }
 
+type TransactionEstimateFeeIn struct {
+	Inputs        int
+	OutputAmounts []uint64
+	Memo          string
+}
+
+type TransactionEstimateFeeOut struct {
+	Size uint64 `json:"size"`
+	Fee  uint64 `json:"fee"`
+}
+
 type TransactionSignIn struct {
 	Tx            HexString `json:"tx"`
 	PrivateKeyHex string    `json:"privateKeyHex"`

@@ -70,6 +70,54 @@ type AuxData struct {
 	Value any
 }
 
+func (a *AuxData) Hash() (hash []byte, err error) {
+	bytes, err := cbor.Marshal(a)
+	if err != nil {
+		err = errors.WithStack(err)
+		return
+	}
+	_hash := blake2b.Sum256(bytes)
+	hash = _hash[:]
+	return
+}
+
+func (a *AuxData) SetMemo(memo string) {
+	if a == nil {
+		return
+	}
+	// TODO: Clean this up!
+	a.Value = KVSlice{
+		KV{
+			K: "Tag",
+			V: uint64(259),
+		},
+		KV{
+			K: "Content",
+			V: KVSlice{
+				{
+					K: 0,
+					V: KVSlice{
+						{
+							K: 0,
+							V: KVSlice{
+								{
+									K: 1337,
+									V: KVSlice{
+										{
+											K: "memo",
+											V: ChunkString(memo, MaxAuxDataStringSize),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func (a *AuxData) JSON() (jsn gjson.Result, err error) {
 	jsnString, err := json.Marshal(a)
 	if err != nil {
@@ -395,43 +443,43 @@ func (t TransactionOutput) Subtypes() []any {
 
 func (TransactionOutput) ToGeneric(in any) (out *TransactionOutputGeneric, err error) {
 	switch output := in.(type) {
-	case TransactionOutputA:
+	case *TransactionOutputA:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.AmountData.Amount,
 		}, nil
 
-	case TransactionOutputB:
+	case *TransactionOutputB:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.Amount,
 		}, nil
 
-	case TransactionOutputC:
+	case *TransactionOutputC:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.Amount,
 		}, nil
 
-	case TransactionOutputD:
+	case *TransactionOutputD:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.AmountData.Amount,
 		}, nil
 
-	case TransactionOutputE:
+	case *TransactionOutputE:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.AmountData.Amount,
 		}, nil
 
-	case TransactionOutputF:
+	case *TransactionOutputF:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.AmountData.Amount,
 		}, nil
 
-	case TransactionOutputG:
+	case *TransactionOutputG:
 		return &TransactionOutputGeneric{
 			Address: output.Address,
 			Amount:  output.Amount,

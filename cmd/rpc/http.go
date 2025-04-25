@@ -64,6 +64,7 @@ func (s *HttpRpcServer) Start() (err error) {
 	s.app.Post("/tx/build", s.postTransactionBuild)
 	s.app.Post("/tx/sign", s.postTransactionSign)
 	s.app.Post("/tx/broadcast", s.postTransactionBroadcast)
+	s.app.Post("/tx/estimate-fee", s.postTransactionEstimateFee)
 	s.app.Get("/status", s.getStatus)
 	s.app.Get("/height", s.getHeight)
 	s.app.Post("/tools/pubkey-to-address", s.postPubkeyToAddress)
@@ -353,25 +354,19 @@ func (s *HttpRpcServer) postTransactionBuild(c *fiber.Ctx) error {
 		return err
 	}
 
-	var txInArgs []string
-	for _, txIn := range in.Inputs {
-		txInArgs = append(txInArgs, fmt.Sprintf("%s#%d", txIn.TxHash, txIn.Index))
-	}
-	txInArg := strings.Join(txInArgs, ",")
-
-	var txOutArgs []string
-	for _, txOut := range in.Outputs {
-		txOutArgs = append(txOutArgs, fmt.Sprintf("%s+%d", txOut.Address, txOut.Value))
-	}
-	txOutArg := strings.Join(txOutArgs, ",")
-
 	args := []string{
 		"conway transaction build",
 		"--cardano-mode",
-		"--tx-in " + txInArg,
-		"--tx-out " + txOutArg,
 		"--change-address " + in.ChangeAddress,
 		"--out-file /dev/stdout",
+	}
+
+	for _, txIn := range in.Inputs {
+		args = append(args, fmt.Sprintf("--tx-in %s#%d", txIn.TxHash, txIn.Index))
+	}
+
+	for _, txOut := range in.Outputs {
+		args = append(args, fmt.Sprintf("--tx-out %s+%d", txOut.Address, txOut.Value))
 	}
 
 	var files []VirtualFile
@@ -678,6 +673,109 @@ func (s *HttpRpcServer) postCli(c *fiber.Ctx) error {
 	c.Type(mime)
 
 	return c.Send(output)
+}
+
+func (s *HttpRpcServer) postTransactionEstimateFee(c *fiber.Ctx) error {
+	var req rpcclient.TransactionEstimateFeeIn
+	if err := s.unmarshalJson(c, &req); err != nil {
+		return err
+	}
+
+	fmt.Println("--------------------------------------------------")
+	fmt.Println("ESTIMATE FEE")
+	if j, err := json.MarshalIndent(req, "", "  "); err == nil {
+		fmt.Println(string(j))
+	}
+
+	tx2 := &TxSubmission{}
+	inputs := []TransactionInput{}
+	for i := 0; i < req.Inputs; i++ {
+		inputs = append(inputs, TransactionInput{
+			Txid:  make(HexBytes, 32),
+			Index: 1,
+		})
+	}
+	outputs := []SubtypeOf[TransactionOutput]{}
+	for _, outputAmount := range req.OutputAmounts {
+		outputs = append(outputs, SubtypeOf[TransactionOutput]{
+			Subtype: &TransactionOutputG{
+				Address: make(Address, 29),
+				Amount:  outputAmount,
+			},
+		})
+	}
+	tx2.Body = TxSubmissionBody{
+		Inputs: WithCborTag[[]TransactionInput]{
+			Tag:   258,
+			Value: inputs,
+		},
+		Outputs:           outputs,
+		Fee:               200000,
+		AuxiliaryDataHash: make(HexBytes, 32),
+	}
+	tx2.AlonzoEval = true
+	tx2.Witness = TxSubmissionWitness{
+		Signers: WithCborTag[[]TxSigner]{
+			Tag: 258,
+			Value: []TxSigner{
+				{
+					Key:       make([]byte, 32),
+					Signature: make([]byte, 64),
+				},
+			},
+		},
+	}
+	if req.Memo != "" {
+		tx2.AuxiliaryData = &AuxData{
+			Value: KVSlice{
+				KV{
+					K: "Tag",
+					V: uint64(259),
+				},
+				KV{
+					K: "Content",
+					V: KVSlice{
+						{
+							K: 0,
+							V: KVSlice{
+								{
+									K: 0,
+									V: KVSlice{
+										{
+											K: 1337,
+											V: KVSlice{
+												{
+													K: "memo",
+													V: ChunkString(req.Memo, MaxAuxDataStringSize),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	tx2Bytes, err := cbor.Marshal(tx2)
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
+	estimatedSize := len(tx2Bytes)
+	estimatedFee := 155381 + ((estimatedSize + 100) * 44)
+
+	rsp := rpcclient.TransactionEstimateFeeOut{
+		Size: uint64(estimatedSize),
+		Fee:  uint64(estimatedFee),
+	}
+	if j, err := json.MarshalIndent(rsp, "", "  "); err == nil {
+		fmt.Println(string(j))
+	}
+
+	return c.JSON(rsp)
 }
 
 func (s *HttpRpcServer) runCardanoBinary(command string) (out []byte, err error) {

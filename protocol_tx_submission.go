@@ -48,7 +48,7 @@ type TxSubmissionBody struct {
 }
 
 type TxSubmissionWitness struct {
-	Signers []TxSigner `cbor:"0,keyasint" json:"signers"`
+	Signers WithCborTag[[]TxSigner] `cbor:"0,keyasint" json:"signers"`
 }
 
 type TxSigner struct {

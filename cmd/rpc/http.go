@@ -186,7 +186,8 @@ func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 	pp := protocol.Utxorpc()
 
 	out := rpcclient.GetStatusOut{
-		Tip: highestPoint,
+		Tip:         highestPoint,
+		ReorgWindow: s.client.Options.ReorgWindow,
 		Protocol: rpcclient.ProtocolOut{
 			CoinsPerUtxoByte:  pp.CoinsPerUtxoByte,
 			MaxTxSize:         pp.MaxTxSize,

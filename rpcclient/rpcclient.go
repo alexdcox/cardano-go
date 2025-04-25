@@ -162,8 +162,9 @@ type ProtocolOut struct {
 }
 
 type GetStatusOut struct {
-	Tip      PointRef    `json:"tip"`
-	Protocol ProtocolOut `json:"fees"`
+	Tip         PointRef    `json:"tip"`
+	Protocol    ProtocolOut `json:"fees"`
+	ReorgWindow int         `json:"reorgWindow"`
 }
 
 func (c *RpcClient) GetStatus() (out *GetStatusOut, err error) {

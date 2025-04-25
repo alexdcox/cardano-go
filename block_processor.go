@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	BlocksUntilConfirmed = 6
-	BlockBatchSize       = 10000
+	BlockBatchSize = 10000
 )
 
 type BlockProcessor struct {
@@ -28,9 +27,10 @@ type BlockProcessor struct {
 	log             *zerolog.Logger
 	blockChan       chan ledger.Block
 	highestPoint    PointRef
+	reorgWindow     int
 }
 
-func NewBlockProcessor(db Database, logger *zerolog.Logger) (bp *BlockProcessor, err error) {
+func NewBlockProcessor(db Database, logger *zerolog.Logger, reorgWindow int) (bp *BlockProcessor, err error) {
 	highestPoint, err := db.GetHighestPoint()
 	if errors.Is(err, sql.ErrNoRows) {
 		// no previous point, at block height 0
@@ -39,10 +39,13 @@ func NewBlockProcessor(db Database, logger *zerolog.Logger) (bp *BlockProcessor,
 		return
 	}
 
+	logger.Info().Msgf("block processor set to trail node tip by a reorganisation window of %d blocks", reorgWindow)
+
 	bp = &BlockProcessor{
 		db:           db,
 		log:          logger,
 		highestPoint: highestPoint,
+		reorgWindow:  reorgWindow,
 	}
 
 	return
@@ -85,11 +88,12 @@ func (bp *BlockProcessor) processBlocks() error {
 			return errors.Wrap(err, "failed to get points for processing")
 		}
 
-		if len(points) <= 6 {
+		if bp.reorgWindow > 0 && len(points) <= bp.reorgWindow {
 			bp.log.Debug().Msg("not enough points for processing")
 			break
 		}
-		points = points[:len(points)-6]
+
+		points = points[:len(points)-bp.reorgWindow]
 
 		bp.log.Info().
 			Int("count", len(points)).

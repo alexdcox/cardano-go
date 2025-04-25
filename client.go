@@ -24,7 +24,8 @@ type ClientOptions struct {
 	Database    Database
 	StartPoint  PointRef
 	// DisableFollowChain bool
-	LogLevel zerolog.Level
+	LogLevel    zerolog.Level
+	ReorgWindow int
 }
 
 func (o *ClientOptions) setDefaults() {
@@ -43,12 +44,17 @@ func (o *ClientOptions) setDefaults() {
 	if len(o.StartPoint.Hash) == 0 {
 		o.StartPoint = PointRef{}
 	}
+
+	if o.ReorgWindow < 0 {
+		o.ReorgWindow = defaultClientOptions.ReorgWindow
+	}
 }
 
 var defaultClientOptions = &ClientOptions{
 	NtNHostPort: "localhost:3000",
 	NtCHostPort: "localhost:3001",
 	Network:     NetworkMainNet,
+	ReorgWindow: 6,
 }
 
 func NewClient(options *ClientOptions) (client *Client, err error) {
@@ -102,7 +108,7 @@ func (c *Client) Start() (err error) {
 
 	c.errChan = make(chan error, 1)
 
-	c.processor, err = NewBlockProcessor(c.db, c.log)
+	c.processor, err = NewBlockProcessor(c.db, c.log, c.Options.ReorgWindow)
 	if err != nil {
 		return
 	}
@@ -181,7 +187,7 @@ func (c *Client) connect() error {
 
 		c.log.Info().
 			Str("host", opt.NtNHostPort).
-			Msg("successfully connected to node and initialized Ouroboros")
+			Msg("successfully connected to node")
 
 		return nil
 	}
@@ -284,7 +290,11 @@ func (c *Client) followChain() {
 
 	syncStart := []common.Point{}
 	if hasStartPoint {
-		c.log.Info().Msgf("syncing from previous point %v", startPoint)
+		c.log.Info().
+			Uint64("height", startPoint.Height).
+			Uint64("slot", startPoint.Slot).
+			Str("hash", startPoint.Hash).
+			Msgf("syncing from previous point")
 		syncStart = append(syncStart, common.NewPoint(
 			startPoint.Slot,
 			HexString(startPoint.Hash).Bytes(),
@@ -294,7 +304,7 @@ func (c *Client) followChain() {
 	}
 
 	if err := c.ntn.ChainSync().Client.Sync(syncStart); err != nil {
-		c.log.Error().Err(err).Msg("failed to start chain sync")
+		c.log.Fatal().Err(err).Msg("failed to start chain sync")
 		return
 	}
 }
@@ -459,7 +469,7 @@ func (c *Client) SubmitTx(signedTx []byte) (err error) {
 		return
 	}
 
-	return errors.WithStack(ntc.LocalTxSubmission().Client.SubmitTx(6, signedTx))
+	return errors.WithStack(ntc.LocalTxSubmission().Client.SubmitTx(uint16(EraConway)-1, signedTx))
 }
 
 func (c *Client) GetHeight() (height PointRef, err error) {

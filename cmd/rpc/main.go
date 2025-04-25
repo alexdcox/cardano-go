@@ -22,7 +22,8 @@ type _config struct {
 	ConfigPath  string `json:"configpath"`
 	SocketPath  string `json:"socketpath"`
 	// Cardano     *Config `json:"cardano"`
-	LogLevel string `json:"loglevel"`
+	LogLevel    string `json:"loglevel"`
+	ReorgWindow int    `json:"reorgwindow"`
 }
 
 func (c *_config) Load() (err error) {
@@ -33,6 +34,7 @@ func (c *_config) Load() (err error) {
 	flag.StringVar(&c.RpcHostPort, "rpchostport", "localhost:3002", "Set host:port for the http/rpc listener")
 	flag.StringVar(&c.SocketPath, "socketpath", "/opt/cardano/ipc/socket", "Path to the node socket")
 	flag.StringVar(&c.LogLevel, "loglevel", "", "Set the log level (trace|debug|info|warn|error|fatal) Can also be set via the CARDANO_RPC_LOG_LEVEL environment variable")
+	flag.IntVar(&c.ReorgWindow, "reorgwindow", -1, "Set the blocks to confirm / reorg window (default: 6)")
 	flag.Parse()
 
 	// c.Cardano = &Config{}
@@ -82,6 +84,7 @@ func main() {
 		Network:     Network(config.Network),
 		LogLevel:    zerolog.InfoLevel,
 		Database:    db,
+		ReorgWindow: config.ReorgWindow,
 	})
 
 	if config.NtNHostPort == "" {

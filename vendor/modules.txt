@@ -2,10 +2,6 @@
 ## explicit; go 1.20
 filippo.io/edwards25519
 filippo.io/edwards25519/field
-# github.com/Salvionied/apollo v1.1.0
-## explicit; go 1.20
-# github.com/Salvionied/cbor/v2 v2.6.0
-## explicit; go 1.12
 # github.com/alexdcox/cbor/v2 v2.0.0
 ## explicit; go 1.18
 github.com/alexdcox/cbor/v2
@@ -72,8 +68,6 @@ github.com/jinzhu/copier
 github.com/klauspost/compress/flate
 github.com/klauspost/compress/gzip
 github.com/klauspost/compress/zlib
-# github.com/maestro-org/go-sdk v1.2.0
-## explicit; go 1.20
 # github.com/mattn/go-colorable v0.1.13
 ## explicit; go 1.15
 github.com/mattn/go-colorable
@@ -110,8 +104,6 @@ github.com/tidwall/match
 # github.com/tidwall/pretty v1.0.2
 ## explicit
 github.com/tidwall/pretty
-# github.com/tyler-smith/go-bip39 v1.1.0
-## explicit; go 1.14
 # github.com/utxorpc/go-codegen v0.16.0
 ## explicit; go 1.21
 github.com/utxorpc/go-codegen/utxorpc/v1alpha/cardano
@@ -134,15 +126,11 @@ github.com/x448/float16
 ## explicit; go 1.20
 golang.org/x/crypto/blake2b
 golang.org/x/crypto/sha3
-# golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1
-## explicit; go 1.20
 # golang.org/x/sys v0.29.0
 ## explicit; go 1.18
 golang.org/x/sys/cpu
 golang.org/x/sys/unix
 golang.org/x/sys/windows
-# golang.org/x/text v0.21.0
-## explicit; go 1.18
 # google.golang.org/protobuf v1.36.3
 ## explicit; go 1.21
 google.golang.org/protobuf/encoding/prototext

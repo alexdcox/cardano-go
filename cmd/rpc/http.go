@@ -69,9 +69,6 @@ func (s *HttpRpcServer) Start() (err error) {
 	s.app.Get("/height", s.getHeight)
 	s.app.Post("/tools/pubkey-to-address", s.postPubkeyToAddress)
 
-	// TODO: clean up this dangerous command
-	s.app.Post("/cli", s.postCli)
-
 	log.Info().Msgf("http/rpc server listening on %s", config.RpcHostPort)
 
 	err = errors.WithStack(s.app.Listen(config.RpcHostPort))
@@ -644,36 +641,6 @@ func (s *HttpRpcServer) unmarshalJson(c *fiber.Ctx, target any) (err error) {
 	}
 
 	return c.BodyParser(target)
-}
-
-func (s *HttpRpcServer) postCli(c *fiber.Ctx) error {
-	var data InputData
-	if err := s.unmarshalJson(c, &data); err != nil {
-		return s.errorResponse(c, err)
-	}
-
-	virtualFiles := []VirtualFile{}
-	for filename, content := range data.Files {
-		virtualFiles = append(virtualFiles, VirtualFile{Name: filename, Content: []byte(content)})
-	}
-
-	output, err := s.runCardanoBinaryWithFiles(data.Method+" "+data.Params, virtualFiles)
-	if err != nil {
-		fmt.Printf("%+v\n", err)
-		return c.Status(http.StatusInternalServerError).JSON(map[string]any{
-			"details": string(output),
-			"error":   ErrNodeCommandFailed.Error(),
-		})
-	}
-
-	var mime = "text/plain"
-	if gjson.ParseBytes(output).IsObject() {
-		mime = "application/json"
-	}
-
-	c.Type(mime)
-
-	return c.Send(output)
 }
 
 func (s *HttpRpcServer) postTransactionEstimateFee(c *fiber.Ctx) error {

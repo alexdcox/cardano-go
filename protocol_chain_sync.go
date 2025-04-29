@@ -43,14 +43,6 @@ func (m MessageRollForwardData) Subtypes() []any {
 	}
 }
 
-func (m MessageRollForward) BlockHeader() (header *BlockHeader, err error) {
-	panic("reimplement me")
-	return
-	// header = &BlockHeader{}
-	// err = errors.WithStack(cbor.Unmarshal(m.Data.BlockHeader, header))
-	// return
-}
-
 type MessageRollBackward struct {
 	WithSubprotocol
 	Point Optional[Point]  `json:"point,omitempty"`

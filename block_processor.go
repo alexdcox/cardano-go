@@ -106,14 +106,6 @@ func (bp *BlockProcessor) processBlocks() error {
 			height++
 		}
 
-		// if errors.Is(err, sql.ErrNoRows) {
-		// 	// no previous point, at block height 0
-		// } else if err != nil {
-		// 	return errors.Wrap(err, "failed to get highest point")
-		// } else {
-		// 	height = highestPoint.Height + 1
-		// }
-
 		var prevHash, prevBoundaryHash string
 		if height > 0 {
 			prevHash = bp.highestPoint.Hash
@@ -212,6 +204,9 @@ func (bp *BlockProcessor) processBlocks() error {
 }
 
 func (bp *BlockProcessor) HandleRollback(rollbackSlot uint64) error {
+	bp.processingMutex.Lock()
+	defer bp.processingMutex.Unlock()
+
 	var highestSlot uint64
 	highestPoint, err := bp.db.GetHighestPoint()
 	if errors.Is(err, sql.ErrNoRows) {
@@ -226,10 +221,17 @@ func (bp *BlockProcessor) HandleRollback(rollbackSlot uint64) error {
 		bp.log.Info().
 			Uint64("rollback_slot", rollbackSlot).
 			Uint64("highest_slot", highestSlot).
-			Msg("chain reorg detected, rolling back")
+			Msg("rolling back to slot")
 
 		if err := bp.db.HandleRollback(rollbackSlot); err != nil {
 			return errors.Wrap(err, "failed to handle rollback")
+		}
+
+		rollbackPoint, err2 := bp.db.GetHighestPoint()
+		if err2 != nil {
+			return errors.Wrap(err, "failed to fetch highest point after rollback")
+		} else {
+			bp.highestPoint = rollbackPoint
 		}
 	}
 

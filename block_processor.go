@@ -237,19 +237,3 @@ func (bp *BlockProcessor) HandleRollback(rollbackSlot uint64) error {
 
 	return nil
 }
-
-// DetectChainSplit checks for and logs chain splits
-func (bp *BlockProcessor) DetectChainSplit(slot uint64) error {
-	isSplit, err := bp.db.DetectChainSplit(slot)
-	if err != nil {
-		return errors.Wrap(err, "failed to detect chain split")
-	}
-
-	if isSplit {
-		bp.log.Warn().
-			Uint64("slot", slot).
-			Msg("chain split detected")
-	}
-
-	return nil
-}

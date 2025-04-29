@@ -255,11 +255,6 @@ func (c *Client) onRollForwards(context chainsync.CallbackContext, blockType uin
 		}
 	}
 
-	// Check for chain splits
-	if err := c.processor.DetectChainSplit(point.Slot); err != nil {
-		c.log.Error().Err(err).Msg("failed to detect chain split")
-	}
-
 	c.points = append(c.points, point)
 
 	if !c.tipReached && tip.Point.Slot == point.Slot {

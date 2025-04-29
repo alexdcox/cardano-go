@@ -27,8 +27,6 @@ type Database interface {
 	AddTxsForBlock(txHashes []string, block uint64) (err error)
 	GetTxs(txHashes []string) (txs []TxRef, err error)
 	GetBlockNumForTx(txHash string) (block uint64, err error)
-	// GetBlockNumForHash(blockHash string) (block uint64, err error)
-
 	AddPoints(points []PointRef) (err error)
 	SetPointHeights(updates []PointRef) (err error)
 	GetPointByHash(blockHash string) (point PointRef, err error)
@@ -38,7 +36,5 @@ type Database interface {
 	GetPointsForLastSlot() (points []PointRef, err error)
 	GetPointsForProcessing(batchSize int) (points []PointRef, err error)
 	GetHighestPoint() (point PointRef, err error)
-
 	HandleRollback(fromSlot uint64) (err error)
-	DetectChainSplit(slot uint64) (isSplit bool, err error)
 }

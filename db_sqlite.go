@@ -122,25 +122,6 @@ func (s *SqlLiteDatabase) HandleRollback(fromSlot uint64) (err error) {
 	return errors.WithStack(err)
 }
 
-// DetectChainSplit checks if we have multiple points for the same slot where type isn't a boundary
-func (s *SqlLiteDatabase) DetectChainSplit(slot uint64) (isSplit bool, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var count int
-	err = s.db.QueryRow(`
-		SELECT COUNT(*) 
-		FROM point 
-		WHERE slot = ? AND type != ?`, // assuming type 0 is boundary block
-		slot, 1).Scan(&count)
-
-	if err != nil {
-		return false, errors.WithStack(err)
-	}
-
-	return count > 1, nil
-}
-
 // GetPointsForProcessing returns points ready for block fetching, respecting BlocksUntilConfirmed-distance from tip
 func (s *SqlLiteDatabase) GetPointsForProcessing(batchSize int) (points []PointRef, err error) {
 	s.mu.Lock()

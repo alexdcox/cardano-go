@@ -2,7 +2,6 @@ package cardano
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/pkg/errors"
 )
@@ -70,32 +69,4 @@ func (e *Era) UnmarshalCBOR(data []byte) (err error) {
 	*e = Era(data[1])
 
 	return
-}
-
-type Slot uint
-
-func (s Slot) Time(network Network, block uint64) time.Time {
-	params, err := network.Params()
-	if err != nil {
-		params = &MainNetParams
-	}
-
-	blockSeconds := params.StartTime
-	lastByronBlock := params.ByronBlock
-	byronActualSlot := lastByronBlock
-	actualSlot := uint64(s - 0)
-
-	// TODO: Refactor this when you understand it.
-
-	if block > lastByronBlock {
-		otherBlocks := actualSlot - byronActualSlot
-		blockSeconds += byronActualSlot * ByronProcessTime
-		blockSeconds += otherBlocks * ShellyProcessTime
-	} else {
-		blockSeconds += actualSlot * ByronProcessTime
-	}
-
-	// t := time.Time{}
-	t := time.Unix(int64(blockSeconds), 0).In(time.UTC)
-	return t
 }

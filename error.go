@@ -21,6 +21,7 @@ var (
 	ErrRpcFailed             = errors.New("rpc failed")
 	ErrNodeCommandFailed     = errors.New("node command failed")
 	ErrNetworkInvalid        = errors.New("network invalid")
+	ErrNodeUnavailable       = errors.New("node unavailable")
 )
 
 var AllErrors = []error{

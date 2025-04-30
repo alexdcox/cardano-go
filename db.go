@@ -24,7 +24,7 @@ func (pr PointRef) Common() common.Point {
 }
 
 type Database interface {
-	AddTxsForBlock(txHashes []string, block uint64) (err error)
+	AddTxsForBlock(refs []TxRef) (err error)
 	GetTxs(txHashes []string) (txs []TxRef, err error)
 	GetBlockNumForTx(txHash string) (block uint64, err error)
 	AddPoints(points []PointRef) (err error)

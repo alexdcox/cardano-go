@@ -16,14 +16,10 @@ type _config struct {
 	NtNHostPort  string `json:"ntnhostport"`
 	NtCHostPort  string `json:"ntchostport"`
 	Network      string `json:"network"`
-	// TODO: This optional parameter is needed for this client to work with custom/3p private networks
-	// NetworkMagic      string          `json:"networkmagic"`
-	RpcHostPort string `json:"rpchostport"`
-	ConfigPath  string `json:"configpath"`
-	SocketPath  string `json:"socketpath"`
-	// Cardano     *Config `json:"cardano"`
-	LogLevel    string `json:"loglevel"`
-	ReorgWindow int    `json:"reorgwindow"`
+	RpcHostPort  string `json:"rpchostport"`
+	SocketPath   string `json:"socketpath"`
+	LogLevel     string `json:"loglevel"`
+	ReorgWindow  int    `json:"reorgwindow"`
 }
 
 func (c *_config) Load() (err error) {
@@ -82,7 +78,7 @@ func main() {
 		NtNHostPort: config.NtNHostPort,
 		NtCHostPort: config.NtCHostPort,
 		Network:     Network(config.Network),
-		LogLevel:    zerolog.InfoLevel,
+		LogLevel:    logLevel,
 		Database:    db,
 		ReorgWindow: config.ReorgWindow,
 	})

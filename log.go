@@ -2,6 +2,7 @@ package cardano
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -30,6 +31,12 @@ func init() {
 	zerolog.TimeFieldFormat = time.TimeOnly
 	zerolog.ErrorStackMarshaler = MarshalStack
 	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+
+	// This is a workaround for ouroboros (which uses slog) to prevent logging
+	// from the client package in this program.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelError,
+	})))
 }
 
 func MarshalStack(err error) interface{} {

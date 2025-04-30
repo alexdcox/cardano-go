@@ -85,7 +85,6 @@ func (a *AuxData) SetMemo(memo string) {
 	if a == nil {
 		return
 	}
-	// TODO: Clean this up!
 	a.Value = KVSlice{
 		KV{
 			K: "Tag",
@@ -101,7 +100,7 @@ func (a *AuxData) SetMemo(memo string) {
 							K: 0,
 							V: KVSlice{
 								{
-									K: 1337,
+									K: MayaProtocolAuxKey,
 									V: KVSlice{
 										{
 											K: "memo",

@@ -2,6 +2,7 @@ package cardano
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -155,8 +156,8 @@ func (s *SqlLiteDatabase) GetPointsForProcessing(batchSize int) (points []PointR
 	return
 }
 
-func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) (err error) {
-	if len(txhashes) == 0 {
+func (s *SqlLiteDatabase) AddTxsForBlock(refs []TxRef) (err error) {
+	if len(refs) == 0 {
 		return
 	}
 
@@ -167,23 +168,34 @@ func (s *SqlLiteDatabase) AddTxsForBlock(txhashes []string, blockNumber uint64) 
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("INSERT OR REPLACE INTO tx (txhash, block_number) VALUES (?, ?)")
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	defer stmt.Close()
+	const chunkSize = 499 // Stay under SQLite's parameter limit (999/2)
 
-	for _, txhash := range txhashes {
-		_, err = stmt.Exec(txhash, blockNumber)
-		if err != nil {
+	for i := 0; i < len(refs); i += chunkSize {
+		end := i + chunkSize
+		if end > len(refs) {
+			end = len(refs)
+		}
+
+		chunk := refs[i:end]
+		valueStrings := make([]string, len(chunk))
+		valueArgs := make([]interface{}, 0, len(chunk)*2)
+
+		for j := range chunk {
+			valueStrings[j] = "(?, ?)"
+			valueArgs = append(valueArgs, chunk[j].Hash, chunk[j].BlockHeight)
+		}
+
+		stmt := fmt.Sprintf(
+			"INSERT INTO tx (txhash, block_number) VALUES %s",
+			strings.Join(valueStrings, ","))
+
+		if _, err = tx.Exec(stmt, valueArgs...); err != nil {
 			return errors.WithStack(err)
 		}
 	}
 
-	err = tx.Commit()
-	return errors.WithStack(err)
+	return errors.WithStack(tx.Commit())
 }
 
 func (s *SqlLiteDatabase) GetTxs(txHashes []string) (txs []TxRef, err error) {
@@ -376,7 +388,7 @@ func (s *SqlLiteDatabase) GetPointByHeight(height uint64) (point PointRef, err e
 	defer s.mu.Unlock()
 
 	err = s.db.QueryRow(
-		"SELECT slot, hash, type, height FROM point WHERE height = ?",
+		"SELECT slot, hash, type, height FROM point WHERE height = ? AND type != 0",
 		height,
 	).Scan(&point.Slot, &point.Hash, &point.Type, &point.Height)
 

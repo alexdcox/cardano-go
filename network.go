@@ -23,12 +23,6 @@ func init() {
 	PrivateNetParams.DelegationPrefix = "stake_test"
 }
 
-// TODO: Are these not variables?
-const (
-	ByronProcessTime  = 20
-	ShellyProcessTime = 1
-)
-
 type NetworkParams struct {
 	Name             Network
 	Magic            NetworkMagic
@@ -88,3 +82,5 @@ const (
 	NetworkMagicSanchonet     NetworkMagic = 4
 	NetworkMagicPrivateNet    NetworkMagic = 42
 )
+
+const MayaProtocolAuxKey = 6676

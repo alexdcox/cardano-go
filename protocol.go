@@ -301,14 +301,7 @@ type SubtypeOf[T HasSubtypes] struct {
 }
 
 func (r SubtypeOf[T]) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]any{
-		"type":  fmt.Sprintf("%T", r.Subtype),
-		"value": r.Subtype,
-	})
-
-	// TODO: hide the type - only useful while testing things
-
-	// return json.Marshal(r.Subtype)
+	return json.Marshal(r.Subtype)
 }
 
 func (r *SubtypeOf[T]) UnmarshalCBOR(bytes []byte) (err error) {

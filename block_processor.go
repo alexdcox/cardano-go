@@ -2,7 +2,6 @@ package cardano
 
 import (
 	"database/sql"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -83,14 +82,13 @@ func (bp *BlockProcessor) processBlocks() error {
 	for {
 		startTime := time.Now()
 
-		points, err := bp.db.GetPointsForProcessing(BlockBatchSize)
+		points, err := bp.db.GetPointsForProcessing(BlockBatchSize + bp.reorgWindow)
 		if err != nil {
 			return errors.Wrap(err, "failed to get points for processing")
 		}
 
-		if bp.reorgWindow > 0 && len(points) <= bp.reorgWindow {
-			bp.log.Debug().Msg("not enough points for processing")
-			break
+		if bp.reorgWindow > 0 && len(points)-bp.reorgWindow <= 0 {
+			return nil
 		}
 
 		points = points[:len(points)-bp.reorgWindow]
@@ -133,18 +131,19 @@ func (bp *BlockProcessor) processBlocks() error {
 			}
 		}()
 
-		var updates []PointRef
+		var pointRefs []PointRef
+		var txRefs []TxRef
 
 		go func() {
 			var maxPoint PointRef
 			for block := range bp.blockChan {
-				var isBoundary bool
+				isBoundary := block.Type() == 0
+
 				var blockPrevHash string
 				var blockHash string
 
 				blockHash = block.Hash()
 				blockPrevHash = block.PrevHash()
-				fmt.Printf("• [%d] %s\n", height, blockHash)
 
 				if height > 0 {
 					if !isBoundary && blockPrevHash != prevHash && blockPrevHash != prevBoundaryHash {
@@ -154,15 +153,11 @@ func (bp *BlockProcessor) processBlocks() error {
 					}
 				}
 
-				var txHashes []string
 				for _, tx := range block.Transactions() {
-					fmt.Printf("+ %s\n", tx.Hash())
-					txHashes = append(txHashes, tx.Hash())
-				}
-
-				if err := bp.db.AddTxsForBlock(txHashes, height); err != nil {
-					errChan <- errors.Wrap(err, "failed to store transactions")
-					return
+					txRefs = append(txRefs, TxRef{
+						Hash:        tx.Hash(),
+						BlockHeight: height,
+					})
 				}
 
 				updatedPoint := PointRef{
@@ -171,16 +166,18 @@ func (bp *BlockProcessor) processBlocks() error {
 					Slot:   block.SlotNumber(),
 					Type:   block.Type(),
 				}
-				updates = append(updates, updatedPoint)
+				pointRefs = append(pointRefs, updatedPoint)
 				maxPoint = updatedPoint
 
 				if isBoundary {
+					if height == 0 {
+						height++
+					}
 					prevBoundaryHash = blockHash
 				} else {
+					height++
 					prevHash = blockHash
 				}
-
-				height++
 			}
 			doneChan <- maxPoint
 			close(doneChan)
@@ -191,9 +188,14 @@ func (bp *BlockProcessor) processBlocks() error {
 		case err := <-errChan:
 			return err
 		case latestHeight := <-doneChan:
-			if err := bp.db.SetPointHeights(updates); err != nil {
+			if err := bp.db.SetPointHeights(pointRefs); err != nil {
 				return errors.Wrap(err, "failed to update point heights")
 			}
+
+			if err := bp.db.AddTxsForBlock(txRefs); err != nil {
+				return errors.Wrap(err, "failed to store transactions")
+			}
+
 			bp.highestPoint = latestHeight
 		}
 

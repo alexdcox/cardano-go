@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -81,8 +81,6 @@ func (s *HttpRpcServer) Stop() (err error) {
 }
 
 func (s *HttpRpcServer) errorResponse(c *fiber.Ctx, err error) error {
-	statusCode := http.StatusInternalServerError
-
 	reportedErr := err
 
 	for _, match := range []error{
@@ -92,30 +90,38 @@ func (s *HttpRpcServer) errorResponse(c *fiber.Ctx, err error) error {
 	} {
 		if errors.Is(err, match) {
 			reportedErr = match
-			statusCode = http.StatusNotFound
-			break
+			return c.Status(http.StatusNotFound).JSON(map[string]any{
+				"error": reportedErr.Error(),
+			})
 		}
 	}
 
-	return c.Status(statusCode).JSON(map[string]any{
+	return c.Status(http.StatusInternalServerError).JSON(map[string]any{
 		"error":   reportedErr.Error(),
 		"details": fmt.Sprintf("%+v", err),
 	})
 }
 
-func (s *HttpRpcServer) blockResponse(block ledger.Block) rpcclient.BlockResponse {
+func (s *HttpRpcServer) blockResponse(block ledger.Block, point PointRef) rpcclient.BlockResponse {
 	transactions := make([]rpcclient.TxResponse, 0, len(block.Transactions()))
 	for _, tx := range block.Transactions() {
 		transactions = append(transactions, s.txResponse(tx))
 	}
 
-	return rpcclient.BlockResponse{
+	rsp := rpcclient.BlockResponse{
 		Height:       block.BlockNumber(),
 		Slot:         block.SlotNumber(),
 		Hash:         block.Hash(),
 		Type:         block.Type(),
 		Transactions: transactions,
 	}
+
+	if block.BlockNumber() == 0 {
+		// Byron era blocks don't know their own height, we have to set it.
+		rsp.Height = point.Height
+	}
+
+	return rsp
 }
 
 func (s *HttpRpcServer) txResponse(tx ledger.Transaction) rpcclient.TxResponse {
@@ -140,8 +146,7 @@ func (s *HttpRpcServer) txResponse(tx ledger.Transaction) rpcclient.TxResponse {
 		auxData := &AuxData{}
 		if err := cbor.Unmarshal(tx.Metadata().Cbor(), auxData); err == nil {
 			if j, err := json.Marshal(auxData); err == nil {
-				// TODO: DONT TRUST IT - Probably need to loop the parent array here instead of the next level down
-				for _, x := range gjson.ParseBytes(j).Get("0.0.1337.memo").Array() {
+				for _, x := range gjson.ParseBytes(j).Get(fmt.Sprintf("0.0.%d.memo", MayaProtocolAuxKey)).Array() {
 					memo += x.String()
 				}
 			}
@@ -163,53 +168,35 @@ func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 		return s.errorResponse(c, err)
 	}
 
-	fileInfo, err := os.Stat(s.config.DatabasePath)
-	if err != nil {
-		return s.errorResponse(c, err)
-	}
-
-	sizeInBytes := fileInfo.Size()
-	sizeInMB := float64(sizeInBytes) / 1024 / 1024
-
-	tip, err := s.client.GetTip()
-	if err != nil {
-		return s.errorResponse(c, err)
-	}
-
 	protocol, err := s.client.GetProtocolParams()
 	if err != nil {
-		return s.errorResponse(c, err)
+		if strings.Contains(err.Error(), "unknown era ID: 0") {
+			protocol = nil
+			err = nil
+		} else if errors.Is(err, io.EOF) {
+			return s.errorResponse(c, ErrNodeUnavailable)
+		} else {
+			return s.errorResponse(c, err)
+		}
 	}
-	pp := protocol.Utxorpc()
 
 	out := rpcclient.GetStatusOut{
 		Tip:         highestPoint,
 		ReorgWindow: s.client.Options.ReorgWindow,
-		Protocol: rpcclient.ProtocolOut{
+	}
+
+	if protocol != nil {
+		pp := protocol.Utxorpc()
+		out.Protocol = &rpcclient.ProtocolOut{
 			CoinsPerUtxoByte:  pp.CoinsPerUtxoByte,
 			MaxTxSize:         pp.MaxTxSize,
 			MinFeeCoefficient: pp.MinFeeCoefficient,
 			MinFeeConstant:    pp.MinFeeConstant,
 			MinUtxoThreshold:  MinUtxoBytes * pp.CoinsPerUtxoByte,
-		},
+		}
 	}
 
 	return c.JSON(out)
-
-	return c.JSON(map[string]any{
-		"db": map[string]any{
-			"sizeMB": fmt.Sprintf("%.2f MB", sizeInMB),
-		},
-		"height": highestPoint,
-		"tip":    tip,
-		"config": s.config,
-		"protocol": map[string]any{
-			"coinsPerUtxoByte":  pp.CoinsPerUtxoByte,
-			"maxTxSize":         pp.MaxTxSize,
-			"minFeeCoefficient": pp.MinFeeCoefficient,
-			"minFeeConstant":    pp.MinFeeConstant,
-		},
-	})
 }
 
 func (s *HttpRpcServer) getUtxoForAddress(c *fiber.Ctx) error {
@@ -244,14 +231,12 @@ func (s *HttpRpcServer) getLatestBlock(c *fiber.Ctx) error {
 		return s.errorResponse(c, err)
 	}
 
-	fmt.Printf("latest block: %v\n", point)
-
 	block, err := s.client.GetBlockByPoint(point)
 	if err != nil {
 		return s.errorResponse(c, err)
 	}
 
-	return c.JSON(block)
+	return c.JSON(s.blockResponse(block, point))
 }
 
 func (s *HttpRpcServer) returnBlock(c *fiber.Ctx, block *Block) error {
@@ -282,7 +267,6 @@ func (s *HttpRpcServer) getBlock(c *fiber.Ctx) error {
 func (s *HttpRpcServer) getBlockByHash(c *fiber.Ctx, hash string) error {
 	point, err := s.db.GetPointByHash(hash)
 	if err != nil {
-		// TODO: maybe handle 404/norow in errorResponse
 		return s.errorResponse(c, err)
 	}
 
@@ -292,7 +276,6 @@ func (s *HttpRpcServer) getBlockByHash(c *fiber.Ctx, hash string) error {
 func (s *HttpRpcServer) getBlockByHeight(c *fiber.Ctx, number uint64) error {
 	point, err := s.db.GetPointByHeight(number)
 	if err != nil {
-		// TODO: maybe handle 404/norow in errorResponse
 		return s.errorResponse(c, err)
 	}
 
@@ -305,7 +288,7 @@ func (s *HttpRpcServer) getBlockByPoint(c *fiber.Ctx, point PointRef) error {
 		return s.errorResponse(c, err)
 	}
 
-	return c.JSON(s.blockResponse(block))
+	return c.JSON(s.blockResponse(block, point))
 }
 
 func (s *HttpRpcServer) getTransaction(c *fiber.Ctx) error {
@@ -338,12 +321,17 @@ func (s *HttpRpcServer) getTransactionBlock(c *fiber.Ctx) error {
 		return s.errorResponse(c, err)
 	}
 
+	point, err := s.db.GetPointByHeight(height)
+	if err != nil {
+		return s.errorResponse(c, err)
+	}
+
 	block, err := s.client.GetBlockByHeight(height)
 	if err != nil {
 		return s.errorResponse(c, err)
 	}
 
-	return c.JSON(s.blockResponse(block))
+	return c.JSON(s.blockResponse(block, point))
 }
 
 func (s *HttpRpcServer) postTransactionBuild(c *fiber.Ctx) error {
@@ -372,7 +360,7 @@ func (s *HttpRpcServer) postTransactionBuild(c *fiber.Ctx) error {
 	if in.Memo != "" {
 		metadataJson, err := json.Marshal(map[string]any{
 			"0": map[string]any{
-				"1337": map[string]any{
+				fmt.Sprint(MayaProtocolAuxKey): map[string]any{
 					"memo": ChunkString(in.Memo, MaxAuxDataStringSize),
 				},
 			},
@@ -710,7 +698,7 @@ func (s *HttpRpcServer) postTransactionEstimateFee(c *fiber.Ctx) error {
 									K: 0,
 									V: KVSlice{
 										{
-											K: 1337,
+											K: MayaProtocolAuxKey,
 											V: KVSlice{
 												{
 													K: "memo",

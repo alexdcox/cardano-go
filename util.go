@@ -2,7 +2,6 @@ package cardano
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"filippo.io/edwards25519"
 	"github.com/alexdcox/cbor/v2"
 	"github.com/mr-tron/base58"
 	"github.com/pkg/errors"
@@ -52,17 +50,6 @@ func (b HexBytes) MarshalJSON() ([]byte, error) {
 
 func (b HexBytes) Equals(o HexBytes) bool {
 	return bytes.Equal(b, o)
-}
-
-func ExpandEd25519PrivateKey(private *ed25519.PrivateKey) {
-	if len(*private) == 32 {
-		var scalar edwards25519.Scalar
-		// TODO: handle this error
-		_, _ = scalar.SetBytesWithClamping(*private)
-		var p edwards25519.Point
-		p.ScalarBaseMult(&scalar)
-		*private = append(*private, p.Bytes()...)
-	}
 }
 
 func IndentCbor(input string) string {
@@ -117,8 +104,6 @@ type WithCborTag[T any] struct {
 func (w WithCborTag[T]) MarshalJSON() ([]byte, error) {
 	return json.Marshal(w.Value)
 }
-
-// TODO: consider Unmarshal JSON?
 
 func (w *WithCborTag[T]) UnmarshalCBOR(bytes []byte) error {
 	b := make([]byte, len(bytes))

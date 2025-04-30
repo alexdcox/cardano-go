@@ -197,9 +197,6 @@ func (r *MessageReader) nextBlocks(data []byte) (messages []Message, remaining [
 			messages = append(messages, &MessageBatchDone{})
 
 			if len(data[i:]) > 0 {
-				// TODO: I actually think this is pretty crucial now
-				// We're dropping extraneous `data[i:]` after the batch
-				// done message (could be parsed in future)
 				i += len(data[i:])
 			}
 

@@ -13,20 +13,22 @@ import (
 	"github.com/pkg/errors"
 )
 
-func NewRpcClient(hostPort string, network Network) (client *RpcClient, err error) {
-	client = &RpcClient{
+func NewHttpRpcClient(hostPort string, network Network) (client RpcClient, err error) {
+	client = &HttpRpcClient{
 		HostPort: hostPort,
 		Network:  network,
 	}
 	return
 }
 
-type RpcClient struct {
+var _ RpcClient = &HttpRpcClient{}
+
+type HttpRpcClient struct {
 	HostPort string
 	Network  Network
 }
 
-func (c *RpcClient) req(method string, path string, body io.Reader) (rsp *http.Response, out []byte, err error) {
+func (c *HttpRpcClient) req(method string, path string, body io.Reader) (rsp *http.Response, out []byte, err error) {
 	req, err2 := http.NewRequest(method, c.HostPort+path, body)
 	if err2 != nil {
 		err = err2
@@ -68,7 +70,7 @@ func (c *RpcClient) req(method string, path string, body io.Reader) (rsp *http.R
 	return
 }
 
-func (c *RpcClient) reqUnmarshal(method string, path string, body io.Reader, target any) (err error) {
+func (c *HttpRpcClient) reqUnmarshal(method string, path string, body io.Reader, target any) (err error) {
 	_, rspBody, err := c.req(method, path, body)
 	if err != nil {
 		err = errors.WithStack(err)
@@ -85,11 +87,11 @@ func (c *RpcClient) reqUnmarshal(method string, path string, body io.Reader, tar
 
 }
 
-func (c *RpcClient) get(path string, target any) (err error) {
+func (c *HttpRpcClient) get(path string, target any) (err error) {
 	return c.reqUnmarshal(http.MethodGet, path, nil, target)
 }
 
-func (c *RpcClient) post(path string, in any, target any) (err error) {
+func (c *HttpRpcClient) post(path string, in any, target any) (err error) {
 	jsn, err := json.Marshal(in)
 	if err != nil {
 		err = errors.WithStack(err)
@@ -101,7 +103,7 @@ func (c *RpcClient) post(path string, in any, target any) (err error) {
 
 type GetHeightOut PointRef
 
-func (c *RpcClient) GetHeight() (out *GetHeightOut, err error) {
+func (c *HttpRpcClient) GetHeight() (out *GetHeightOut, err error) {
 	out = &GetHeightOut{}
 	err = c.get("/height", out)
 	return
@@ -109,7 +111,7 @@ func (c *RpcClient) GetHeight() (out *GetHeightOut, err error) {
 
 type GetTransactionOut TxResponse
 
-func (c *RpcClient) GetTransaction(hash string) (out *GetTransactionOut, err error) {
+func (c *HttpRpcClient) GetTransaction(hash string) (out *GetTransactionOut, err error) {
 	out = &GetTransactionOut{}
 	err = c.get(fmt.Sprintf("/tx/%s", hash), out)
 	return
@@ -123,7 +125,7 @@ type BroadcastTxOut struct {
 	TxHash string `json:"txHash"`
 }
 
-func (c *RpcClient) BroadcastTx(in *BroadcastTxIn) (out *BroadcastTxOut, err error) {
+func (c *HttpRpcClient) BroadcastTx(in *BroadcastTxIn) (out *BroadcastTxOut, err error) {
 	out = &BroadcastTxOut{}
 	err = c.post("/tx/broadcast", in, out)
 	return
@@ -143,7 +145,7 @@ type Utxo struct {
 	Height  uint64 `json:"height"`
 }
 
-func (c *RpcClient) GetUtxosForAddress(in *GetUtxosForAddressIn) (out GetUtxosForAddressOut, err error) {
+func (c *HttpRpcClient) GetUtxosForAddress(in *GetUtxosForAddressIn) (out GetUtxosForAddressOut, err error) {
 	addr, err := in.Address.Bech32String(c.Network)
 	if err != nil {
 		return
@@ -167,7 +169,7 @@ type GetStatusOut struct {
 	ReorgWindow int          `json:"reorgWindow"`
 }
 
-func (c *RpcClient) GetStatus() (out *GetStatusOut, err error) {
+func (c *HttpRpcClient) GetStatus() (out *GetStatusOut, err error) {
 	out = &GetStatusOut{}
 	err = c.get("/status", out)
 	return
@@ -236,7 +238,7 @@ func (o *TransactionBuildOut) Submission() (submission *TxSubmission, err error)
 	return
 }
 
-func (c *RpcClient) BuildTx(in *TransactionBuildIn) (out *TransactionBuildOut, err error) {
+func (c *HttpRpcClient) BuildTx(in *TransactionBuildIn) (out *TransactionBuildOut, err error) {
 	out = &TransactionBuildOut{}
 	err = c.post("/tx/build", in, out)
 	return
@@ -246,13 +248,13 @@ type GetBlockIn struct {
 	Height uint64 `json:"height"`
 }
 
-func (c *RpcClient) GetBlockByHash(hash string) (out *BlockResponse, err error) {
+func (c *HttpRpcClient) GetBlockByHash(hash string) (out *BlockResponse, err error) {
 	out = &BlockResponse{}
 	err = c.get(fmt.Sprintf("/block/%s", hash), out)
 	return
 }
 
-func (c *RpcClient) GetBlockByHeight(height uint64) (out *BlockResponse, err error) {
+func (c *HttpRpcClient) GetBlockByHeight(height uint64) (out *BlockResponse, err error) {
 	out = &BlockResponse{}
 	err = c.get(fmt.Sprintf("/block/%d", height), out)
 	return
@@ -305,4 +307,15 @@ func (r *RpcError) StdErr() error {
 		}
 	}
 	return nil
+}
+
+type RpcClient interface {
+	GetHeight() (out *GetHeightOut, err error)
+	GetTransaction(hash string) (out *GetTransactionOut, err error)
+	BroadcastTx(in *BroadcastTxIn) (out *BroadcastTxOut, err error)
+	GetUtxosForAddress(in *GetUtxosForAddressIn) (out GetUtxosForAddressOut, err error)
+	GetStatus() (out *GetStatusOut, err error)
+	BuildTx(in *TransactionBuildIn) (out *TransactionBuildOut, err error)
+	GetBlockByHash(hash string) (out *BlockResponse, err error)
+	GetBlockByHeight(height uint64) (out *BlockResponse, err error)
 }

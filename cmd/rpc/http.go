@@ -163,9 +163,9 @@ func (s *HttpRpcServer) txResponse(tx ledger.Transaction) rpcclient.TxResponse {
 }
 
 func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
-	highestPoint, err := s.client.GetHeight()
-	if err != nil {
-		return s.errorResponse(c, err)
+	highestPoint, heightErr := s.client.GetHeight()
+	if heightErr != nil && !errors.Is(heightErr, ErrPointNotFound) {
+		return s.errorResponse(c, heightErr)
 	}
 
 	protocol, err := s.client.GetProtocolParams()
@@ -181,8 +181,11 @@ func (s *HttpRpcServer) getStatus(c *fiber.Ctx) error {
 	}
 
 	out := rpcclient.GetStatusOut{
-		Tip:         highestPoint,
 		ReorgWindow: s.client.Options.ReorgWindow,
+	}
+
+	if heightErr == nil {
+		out.Tip = highestPoint
 	}
 
 	if protocol != nil {

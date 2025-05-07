@@ -55,11 +55,6 @@ func (c *HttpRpcClient) req(method string, path string, body io.Reader) (rsp *ht
 		errRsp := &RpcError{}
 		if decodeErr := json.Unmarshal(out, errRsp); decodeErr == nil {
 			err = errRsp
-
-			if stdErr := errRsp.StdErr(); stdErr != nil {
-				err = stdErr
-			}
-
 			return
 		}
 
@@ -286,27 +281,9 @@ type TxResponse struct {
 	Fee     uint64     `json:"fee"`
 }
 
-type RpcError struct {
-	Err     string `json:"error"`
-	Details string `json:"details"`
-}
-
 type PublicKeyToAddress struct {
 	Network      Network `json:"network"`
 	PublicKeyHex string  `json:"publicKeyHex"`
-}
-
-func (r *RpcError) Error() string {
-	return r.Err
-}
-
-func (r *RpcError) StdErr() error {
-	for _, a := range AllErrors {
-		if r.Err == a.Error() {
-			return errors.Wrap(a, r.Details)
-		}
-	}
-	return nil
 }
 
 type RpcClient interface {

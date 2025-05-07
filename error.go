@@ -1,41 +1,41 @@
 package cardano
 
 import (
+	"net/http"
+
 	"github.com/pkg/errors"
 )
 
-var (
-	ErrNotChunkFile          = errors.New("not a chunk file")
-	ErrVersionRejected       = errors.New("ntn version rejected")
-	ErrEraBeforeConway       = errors.New("era before conway")
-	ErrChunkBlockMissing     = errors.New("chunk doesn't contain expected block")
-	ErrDataDirectoryNotFound = errors.New("data directory not found")
-	ErrPointNotFound         = errors.New("point not found")
-	ErrBlockNotFound         = errors.New("block not found")
-	ErrTransactionNotFound   = errors.New("transaction not found")
-	ErrNotEnoughFunds        = errors.New("not enough funds")
-	ErrInvalidPrivateKey     = errors.New("invalid private key")
-	ErrInvalidPublicKey      = errors.New("invalid public key")
-	ErrInvalidPublicKeyType  = errors.New("invalid public key type")
-	ErrInvalidCliResponse    = errors.New("invalid cardano-cli response")
-	ErrRpcFailed             = errors.New("rpc failed")
-	ErrNodeCommandFailed     = errors.New("node command failed")
-	ErrNetworkInvalid        = errors.New("network invalid")
-	ErrNodeUnavailable       = errors.New("node unavailable")
-)
-
-var AllErrors = []error{
-	ErrNotChunkFile,
-	ErrVersionRejected,
-	ErrEraBeforeConway,
-	ErrChunkBlockMissing,
-	ErrDataDirectoryNotFound,
-	ErrPointNotFound,
-	ErrBlockNotFound,
-	ErrTransactionNotFound,
-	ErrNotEnoughFunds,
-	ErrInvalidPublicKeyType,
-	ErrInvalidCliResponse,
-	ErrRpcFailed,
-	ErrNodeCommandFailed,
+type RpcError struct {
+	Msg     string
+	Details string
+	Code    int
 }
+
+func (r RpcError) Error() string {
+	return r.Msg
+}
+
+func (r RpcError) Is(target error) bool {
+	t := &RpcError{}
+	if target != nil && errors.As(target, t) {
+		return t.Msg == r.Msg
+	}
+	return false
+}
+
+var (
+	ErrBlockProcessorStarting = RpcError{Msg: "block processor starting", Code: http.StatusNotFound}
+	ErrPointNotFound          = RpcError{Msg: "point not found", Code: http.StatusNotFound}
+	ErrBlockNotFound          = RpcError{Msg: "block not found", Code: http.StatusNotFound}
+	ErrTransactionNotFound    = RpcError{Msg: "transaction not found", Code: http.StatusNotFound}
+	ErrNotEnoughFunds         = RpcError{Msg: "not enough funds", Code: http.StatusBadRequest}
+	ErrInvalidPrivateKey      = RpcError{Msg: "invalid private key", Code: http.StatusBadRequest}
+	ErrInvalidPublicKey       = RpcError{Msg: "invalid public key", Code: http.StatusBadRequest}
+	ErrInvalidPublicKeyType   = RpcError{Msg: "invalid public key type", Code: http.StatusBadRequest}
+	ErrInvalidCliResponse     = RpcError{Msg: "invalid cardano-cli response", Code: http.StatusBadRequest}
+	ErrRpcFailed              = RpcError{Msg: "rpc failed", Code: 0}
+	ErrNodeCommandFailed      = RpcError{Msg: "node command failed", Code: http.StatusBadRequest}
+	ErrNetworkInvalid         = RpcError{Msg: "network invalid", Code: http.StatusBadRequest}
+	ErrNodeUnavailable        = RpcError{Msg: "node unavailable", Code: http.StatusInternalServerError}
+)

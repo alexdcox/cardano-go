@@ -81,23 +81,15 @@ func (s *HttpRpcServer) Stop() (err error) {
 }
 
 func (s *HttpRpcServer) errorResponse(c *fiber.Ctx, err error) error {
-	reportedErr := err
-
-	for _, match := range []error{
-		ErrPointNotFound,
-		ErrBlockNotFound,
-		ErrTransactionNotFound,
-	} {
-		if errors.Is(err, match) {
-			reportedErr = match
-			return c.Status(http.StatusNotFound).JSON(map[string]any{
-				"error": reportedErr.Error(),
-			})
-		}
+	rpcErr := &RpcError{}
+	if errors.As(err, rpcErr) {
+		return c.Status(rpcErr.Code).JSON(map[string]any{
+			"error": rpcErr.Msg,
+		})
 	}
 
 	return c.Status(http.StatusInternalServerError).JSON(map[string]any{
-		"error":   reportedErr.Error(),
+		"error":   err.Error(),
 		"details": fmt.Sprintf("%+v", err),
 	})
 }
@@ -525,7 +517,7 @@ func (s *HttpRpcServer) postTransactionSign(c *fiber.Ctx) error {
 func (s *HttpRpcServer) getHeight(c *fiber.Ctx) error {
 	height, err := s.client.GetHeight()
 	if errors.Is(err, ErrPointNotFound) {
-		return c.Status(http.StatusNotFound).SendString("Block processor starting...")
+		return s.errorResponse(c, ErrBlockProcessorStarting)
 	} else if err != nil {
 		return s.errorResponse(c, err)
 	}
